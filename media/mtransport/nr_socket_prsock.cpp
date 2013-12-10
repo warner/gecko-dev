@@ -112,8 +112,10 @@ extern "C" {
 #include "async_wait.h"
 #include "nr_socket.h"
 #include "nr_socket_local.h"
+#include "stun_hint.h"
 }
 #include "nr_socket_prsock.h"
+#include "simpletokenbucket.h"
 
 // Implement the nsISupports ref counting
 namespace mozilla {
@@ -227,7 +229,6 @@ static int nr_transport_addr_to_praddr(nr_transport_addr *addr,
 
     switch(addr->protocol){
       case IPPROTO_TCP:
-        ABORT(R_INTERNAL); /* Can't happen for now */
         break;
       case IPPROTO_UDP:
         break;
@@ -315,7 +316,7 @@ abort:
 }
 
 int nr_netaddr_to_transport_addr(const net::NetAddr *netaddr,
-  nr_transport_addr *addr)
+                                 nr_transport_addr *addr, int protocol)
   {
     int _status;
     int r;
@@ -324,7 +325,7 @@ int nr_netaddr_to_transport_addr(const net::NetAddr *netaddr,
       case AF_INET:
         if ((r = nr_ip4_port_to_transport_addr(ntohl(netaddr->inet.ip),
                                                ntohs(netaddr->inet.port),
-                                               IPPROTO_UDP, addr)))
+                                               protocol, addr)))
           ABORT(r);
         break;
       case AF_INET6:
@@ -339,7 +340,8 @@ int nr_netaddr_to_transport_addr(const net::NetAddr *netaddr,
   }
 
 int nr_praddr_to_transport_addr(const PRNetAddr *praddr,
-  nr_transport_addr *addr, int keep)
+                                nr_transport_addr *addr, int protocol,
+                                int keep)
   {
     int _status;
     int r;
@@ -352,7 +354,7 @@ int nr_praddr_to_transport_addr(const PRNetAddr *praddr,
         ip4.sin_port = praddr->inet.port;
         if ((r = nr_sockaddr_to_transport_addr((sockaddr *)&ip4,
                                                sizeof(ip4),
-                                               IPPROTO_UDP, keep,
+                                               protocol, keep,
                                                addr)))
           ABORT(r);
         break;
@@ -418,9 +420,21 @@ int NrSocket::create(nr_transport_addr *addr) {
   if((r=nr_transport_addr_to_praddr(addr, &naddr)))
     ABORT(r);
 
-  if (!(fd_ = PR_NewUDPSocket())) {
-    r_log(LOG_GENERIC,LOG_CRIT,"Couldn't create socket");
-    ABORT(R_INTERNAL);
+  switch (addr->protocol) {
+    case IPPROTO_UDP:
+      if (!(fd_ = PR_NewUDPSocket())) {
+        r_log(LOG_GENERIC,LOG_CRIT,"Couldn't create socket");
+        ABORT(R_INTERNAL);
+      }
+      break;
+    case IPPROTO_TCP:
+      if (!(fd_ = PR_NewTCPSocket())) {
+        r_log(LOG_GENERIC,LOG_CRIT,"Couldn't create socket");
+        ABORT(R_INTERNAL);
+      }
+      break;
+    default:
+      ABORT(R_INTERNAL);
   }
 
   status = PR_Bind(fd_, &naddr);
@@ -442,7 +456,7 @@ int NrSocket::create(nr_transport_addr *addr) {
       ABORT(R_INTERNAL);
     }
 
-    if((r=nr_praddr_to_transport_addr(&naddr,&my_addr_,1)))
+    if((r=nr_praddr_to_transport_addr(&naddr,&my_addr_,addr->protocol,1)))
       ABORT(r);
   }
 
@@ -488,6 +502,32 @@ int NrSocket::sendto(const void *msg, size_t len,
   if(fd_==nullptr)
     ABORT(R_EOD);
 
+  if (nr_is_stun_request_message((UCHAR*)msg, len)) {
+    // Global rate limiting for stun requests, to mitigate the ice hammer DoS
+    // (see http://tools.ietf.org/html/draft-thomson-mmusic-ice-webrtc)
+
+    // Tolerate rate of 8k/sec, for one second.
+    static SimpleTokenBucket burst(8192*1, 8192);
+    // Tolerate rate of 3.6k/sec over twenty seconds.
+    static SimpleTokenBucket sustained(3686*20, 3686);
+
+    // Check number of tokens in each bucket.
+    if (burst.getTokens(UINT32_MAX) < len ||
+        sustained.getTokens(UINT32_MAX) < len) {
+      r_log(LOG_GENERIC, LOG_ERR,
+                 "Global rate limit for STUN requests exceeded.");
+      MOZ_ASSERT("Global rate limit for STUN requests exceeded. Go bug "
+                 "bcampen@mozilla.com if you weren't intentionally spamming "
+                 "ICE candidates, or don't know what that means.");
+      ABORT(R_WOULDBLOCK);
+    }
+
+    // Take len tokens from both buckets.
+    // (not threadsafe, but no problem since this is only called from STS)
+    burst.getTokens(len);
+    sustained.getTokens(len);
+  }
+
   // TODO: Convert flags?
   status = PR_SendTo(fd_, msg, len, flags, &naddr, PR_INTERVAL_NO_WAIT);
   if (status < 0 || (size_t)status != len) {
@@ -504,8 +544,8 @@ abort:
 }
 
 int NrSocket::recvfrom(void * buf, size_t maxlen,
-                                       size_t *len, int flags,
-                                       nr_transport_addr *from) {
+                       size_t *len, int flags,
+                       nr_transport_addr *from) {
   ASSERT_ON_THREAD(ststhread_);
   int r,_status;
   PRNetAddr nfrom;
@@ -518,7 +558,7 @@ int NrSocket::recvfrom(void * buf, size_t maxlen,
   }
   *len=status;
 
-  if((r=nr_praddr_to_transport_addr(&nfrom,from,0)))
+  if((r=nr_praddr_to_transport_addr(&nfrom,from,my_addr_.protocol,0)))
     ABORT(r);
 
   //r_log(LOG_GENERIC,LOG_DEBUG,"Read %d bytes from %s",*len,addr->as_string);
@@ -537,6 +577,82 @@ int NrSocket::getaddr(nr_transport_addr *addrp) {
 void NrSocket::close() {
   ASSERT_ON_THREAD(ststhread_);
   mCondition = NS_BASE_STREAM_CLOSED;
+}
+
+
+int NrSocket::connect(nr_transport_addr *addr) {
+  ASSERT_ON_THREAD(ststhread_);
+  int r,_status;
+  PRNetAddr naddr;
+  int32_t status;
+
+  if ((r=nr_transport_addr_to_praddr(addr, &naddr)))
+    ABORT(r);
+
+  if(!fd_)
+    ABORT(R_EOD);
+
+  // Note: this just means we tried to connect, not that we
+  // are actually live.
+  connect_invoked_ = true;
+  status = PR_Connect(fd_, &naddr, PR_INTERVAL_NO_WAIT);
+
+  if (status != PR_SUCCESS) {
+    if (PR_GetError() == PR_IN_PROGRESS_ERROR)
+      ABORT(R_WOULDBLOCK);
+
+    ABORT(R_IO_ERROR);
+  }
+
+  _status=0;
+abort:
+  return(_status);
+}
+
+
+int NrSocket::write(const void *msg, size_t len, size_t *written) {
+  ASSERT_ON_THREAD(ststhread_);
+  int _status;
+  int32_t status;
+
+  if (!connect_invoked_)
+    ABORT(R_FAILED);
+
+  status = PR_Write(fd_, msg, len);
+  if (status < 0) {
+    if (PR_GetError() == PR_WOULD_BLOCK_ERROR)
+      ABORT(R_WOULDBLOCK);
+    ABORT(R_IO_ERROR);
+  }
+
+  *written = status;
+
+  _status=0;
+abort:
+  return _status;
+}
+
+int NrSocket::read(void* buf, size_t maxlen, size_t *len) {
+  ASSERT_ON_THREAD(ststhread_);
+  int _status;
+  int32_t status;
+
+  if (!connect_invoked_)
+    ABORT(R_FAILED);
+
+  status = PR_Read(fd_, buf, maxlen);
+  if (status < 0) {
+    if (PR_GetError() == PR_WOULD_BLOCK_ERROR)
+      ABORT(R_WOULDBLOCK);
+    ABORT(R_IO_ERROR);
+  }
+  if (status == 0)
+    ABORT(R_EOD);
+
+  *len = (size_t)status;  // Guaranteed to be > 0
+  _status = 0;
+abort:
+  return(_status);
 }
 
 // NrSocketIpc Implementation
@@ -648,7 +764,7 @@ NS_IMETHODIMP NrSocketIpc::CallListenerVoid(const nsACString &type) {
       MOZ_ASSERT(false, "Failed to copy my_addr_");
     }
 
-    if (nr_praddr_to_transport_addr(&praddr, &my_addr_, 1)) {
+    if (nr_praddr_to_transport_addr(&praddr, &my_addr_, IPPROTO_UDP, 1)) {
       err_ = true;
       MOZ_ASSERT(false, "Failed to copy local host to my_addr_");
     }
@@ -823,7 +939,7 @@ int NrSocketIpc::recvfrom(void *buf, size_t maxlen, size_t *len, int flags,
 
     received_msgs_.pop();
 
-    if ((r=nr_praddr_to_transport_addr(&msg->from, from, 0))) {
+    if ((r=nr_praddr_to_transport_addr(&msg->from, from, IPPROTO_UDP, 0))) {
       err_ = true;
       MOZ_ASSERT(false, "Get bogus address for received UDP packet");
       ABORT(r);
@@ -855,6 +971,21 @@ int NrSocketIpc::getaddr(nr_transport_addr *addrp) {
   return nr_transport_addr_copy(addrp, &my_addr_);
 }
 
+int NrSocketIpc::connect(nr_transport_addr *addr) {
+  MOZ_ASSERT(false);
+  return R_INTERNAL;
+}
+
+int NrSocketIpc::write(const void *msg, size_t len, size_t *written) {
+  MOZ_ASSERT(false);
+  return R_INTERNAL;
+}
+
+int NrSocketIpc::read(void* buf, size_t maxlen, size_t *len) {
+  MOZ_ASSERT(false);
+  return R_INTERNAL;
+}
+
 // Main thread executors
 void NrSocketIpc::create_m(const nsACString &host, const uint16_t port) {
   ASSERT_ON_THREAD(main_thread_);
@@ -867,6 +998,8 @@ void NrSocketIpc::create_m(const nsACString &host, const uint16_t port) {
     err_ = true;
     MOZ_ASSERT(false, "Failed to create UDPSocketChild");
   }
+
+  socket_child_->SetFilterName(nsCString("stun"));
 
   if (NS_FAILED(socket_child_->Bind(this, host, port))) {
     err_ = true;
@@ -929,13 +1062,22 @@ static int nr_socket_local_recvfrom(void *obj,void * restrict buf,
 static int nr_socket_local_getfd(void *obj, NR_SOCKET *fd);
 static int nr_socket_local_getaddr(void *obj, nr_transport_addr *addrp);
 static int nr_socket_local_close(void *obj);
+static int nr_socket_local_connect(void *sock, nr_transport_addr *addr);
+static int nr_socket_local_write(void *obj,const void *msg, size_t len,
+                                 size_t *written);
+static int nr_socket_local_read(void *obj,void * restrict buf, size_t maxlen,
+                                size_t *len);
 
 static nr_socket_vtbl nr_socket_local_vtbl={
+  1,
   nr_socket_local_destroy,
   nr_socket_local_sendto,
   nr_socket_local_recvfrom,
   nr_socket_local_getfd,
   nr_socket_local_getaddr,
+  nr_socket_local_connect,
+  nr_socket_local_write,
+  nr_socket_local_read,
   nr_socket_local_close
 };
 
@@ -957,14 +1099,15 @@ int nr_socket_local_create(nr_transport_addr *addr, nr_socket **sockp) {
   if (r)
     ABORT(r);
 
-  r = nr_socket_create_int(static_cast<void *>(sock), &nr_socket_local_vtbl, sockp);
+  r = nr_socket_create_int(static_cast<void *>(sock),
+                           sock->vtbl(), sockp);
   if (r)
     ABORT(r);
 
   // Add a reference so that we can delete it in destroy()
   sock->AddRef();
 
-  _status =0;
+  _status = 0;
 
 abort:
   if (_status) {
@@ -1025,6 +1168,26 @@ static int nr_socket_local_close(void *obj) {
   return 0;
 }
 
+static int nr_socket_local_write(void *obj, const void *msg, size_t len,
+                                 size_t *written) {
+  NrSocket *sock = static_cast<NrSocket *>(obj);
+
+  return sock->write(msg, len, written);
+}
+
+static int nr_socket_local_read(void *obj, void * restrict buf, size_t maxlen,
+                                size_t *len) {
+  NrSocket *sock = static_cast<NrSocket *>(obj);
+
+  return sock->read(buf, maxlen, len);
+}
+
+static int nr_socket_local_connect(void *obj, nr_transport_addr *addr) {
+  NrSocket *sock = static_cast<NrSocket *>(obj);
+
+  return sock->connect(addr);
+}
+
 // Implement async api
 int NR_async_wait(NR_SOCKET sock, int how, NR_async_cb cb,void *cb_arg,
                   char *function,int line) {
@@ -1037,5 +1200,9 @@ int NR_async_cancel(NR_SOCKET sock,int how) {
   NrSocketBase *s = static_cast<NrSocketBase *>(sock);
 
   return s->cancel(how);
+}
+
+nr_socket_vtbl* NrSocketBase::vtbl() {
+  return &nr_socket_local_vtbl;
 }
 

@@ -170,13 +170,16 @@ js::DebugExceptionUnwind(JSContext *cx, AbstractFramePtr frame, jsbytecode *pc)
 JS_FRIEND_API(bool)
 JS_SetDebugModeForAllCompartments(JSContext *cx, bool debug)
 {
-    AutoDebugModeGC dmgc(cx->runtime());
-
-    for (CompartmentsIter c(cx->runtime(), SkipAtoms); !c.done(); c.next()) {
-        // Ignore special compartments (atoms, JSD compartments)
-        if (c->principals) {
-            if (!c->setDebugModeFromC(cx, !!debug, dmgc))
-                return false;
+    for (ZonesIter zone(cx->runtime(), SkipAtoms); !zone.done(); zone.next()) {
+        // Invalidate a zone at a time to avoid doing a zone-wide CellIter
+        // per compartment.
+        AutoDebugModeInvalidation invalidate(zone);
+        for (CompartmentsInZoneIter c(zone); !c.done(); c.next()) {
+            // Ignore special compartments (atoms, JSD compartments)
+            if (c->principals) {
+                if (!c->setDebugModeFromC(cx, !!debug, invalidate))
+                    return false;
+            }
         }
     }
     return true;
@@ -185,8 +188,8 @@ JS_SetDebugModeForAllCompartments(JSContext *cx, bool debug)
 JS_FRIEND_API(bool)
 JS_SetDebugModeForCompartment(JSContext *cx, JSCompartment *comp, bool debug)
 {
-    AutoDebugModeGC dmgc(cx->runtime());
-    return comp->setDebugModeFromC(cx, !!debug, dmgc);
+    AutoDebugModeInvalidation invalidate(comp);
+    return comp->setDebugModeFromC(cx, !!debug, invalidate);
 }
 
 static bool
@@ -388,7 +391,7 @@ JS_LineNumberToPC(JSContext *cx, JSScript *script, unsigned lineno)
 JS_PUBLIC_API(jsbytecode *)
 JS_EndPC(JSContext *cx, JSScript *script)
 {
-    return script->code + script->length;
+    return script->codeEnd();
 }
 
 JS_PUBLIC_API(bool)
@@ -396,7 +399,7 @@ JS_GetLinePCs(JSContext *cx, JSScript *script,
               unsigned startLine, unsigned maxLines,
               unsigned* count, unsigned** retLines, jsbytecode*** retPCs)
 {
-    size_t len = (script->length > maxLines ? maxLines : script->length);
+    size_t len = (script->length() > maxLines ? maxLines : script->length());
     unsigned *lines = cx->pod_malloc<unsigned>(len);
     if (!lines)
         return false;
@@ -407,7 +410,7 @@ JS_GetLinePCs(JSContext *cx, JSScript *script,
         return false;
     }
 
-    unsigned lineno = script->lineno;
+    unsigned lineno = script->lineno();
     unsigned offset = 0;
     unsigned i = 0;
     for (jssrcnote *sn = script->notes(); !SN_IS_TERMINATOR(sn); sn = SN_NEXT(sn)) {
@@ -421,7 +424,7 @@ JS_GetLinePCs(JSContext *cx, JSScript *script,
 
             if (lineno >= startLine) {
                 lines[i] = lineno;
-                pcs[i] = script->code + offset;
+                pcs[i] = script->offsetToPC(offset);
                 if (++i >= maxLines)
                     break;
             }
@@ -575,7 +578,7 @@ JS_GetScriptSourceMap(JSContext *cx, JSScript *script)
 JS_PUBLIC_API(unsigned)
 JS_GetScriptBaseLineNumber(JSContext *cx, JSScript *script)
 {
-    return script->lineno;
+    return script->lineno();
 }
 
 JS_PUBLIC_API(unsigned)
@@ -834,10 +837,10 @@ JS_DumpBytecode(JSContext *cx, JSScript *scriptArg)
     if (!sprinter.init())
         return;
 
-    fprintf(stdout, "--- SCRIPT %s:%d ---\n", script->filename(), script->lineno);
+    fprintf(stdout, "--- SCRIPT %s:%d ---\n", script->filename(), (int) script->lineno());
     js_Disassemble(cx, script, true, &sprinter);
     fputs(sprinter.string(), stdout);
-    fprintf(stdout, "--- END SCRIPT %s:%d ---\n", script->filename(), script->lineno);
+    fprintf(stdout, "--- END SCRIPT %s:%d ---\n", script->filename(), (int) script->lineno());
 #endif
 }
 
@@ -851,10 +854,10 @@ JS_DumpPCCounts(JSContext *cx, JSScript *scriptArg)
     if (!sprinter.init())
         return;
 
-    fprintf(stdout, "--- SCRIPT %s:%d ---\n", script->filename(), script->lineno);
+    fprintf(stdout, "--- SCRIPT %s:%d ---\n", script->filename(), (int) script->lineno());
     js_DumpPCCounts(cx, script, &sprinter);
     fputs(sprinter.string(), stdout);
-    fprintf(stdout, "--- END SCRIPT %s:%d ---\n", script->filename(), script->lineno);
+    fprintf(stdout, "--- END SCRIPT %s:%d ---\n", script->filename(), (int) script->lineno());
 }
 
 namespace {

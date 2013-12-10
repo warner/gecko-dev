@@ -527,13 +527,16 @@ class MarionetteTestRunner(object):
     def run_tests(self, tests):
         self.reset_test_stats()
         starttime = datetime.utcnow()
-        while self.repeat >=0:
-            self.logger.info('\nROUND %d\n-------' % self.repeat)
+        counter = self.repeat
+        while counter >=0:
+            round = self.repeat - counter
+            if round > 0:
+                self.logger.info('\nREPEAT %d\n-------' % round)
             if self.shuffle:
                 random.shuffle(tests)
             for test in tests:
                 self.run_test(test)
-            self.repeat -= 1
+            counter -= 1
         self.logger.info('\nSUMMARY\n-------')
         self.logger.info('passed: %d' % self.passed)
         self.logger.info('failed: %d' % self.failed)
@@ -572,6 +575,22 @@ class MarionetteTestRunner(object):
 
         if not self.marionette:
             self.start_marionette()
+            if self.emulator:
+                self.marionette.emulator.wait_for_homescreen(self.marionette)
+
+        testargs = {}
+        if self.type is not None:
+            testtypes = self.type.replace('+', ' +').replace('-', ' -').split()
+            for atype in testtypes:
+                if atype.startswith('+'):
+                    testargs.update({ atype[1:]: 'true' })
+                elif atype.startswith('-'):
+                    testargs.update({ atype[1:]: 'false' })
+                else:
+                    testargs.update({ atype: 'true' })
+        oop = testargs.get('oop', False)
+        if isinstance(oop, basestring):
+            oop = False if oop == 'false' else 'true'
 
         filepath = os.path.abspath(test)
 
@@ -594,22 +613,12 @@ class MarionetteTestRunner(object):
         suite = unittest.TestSuite()
 
         if file_ext == '.ini':
-            testargs = {}
-            if self.type is not None:
-                testtypes = self.type.replace('+', ' +').replace('-', ' -').split()
-                for atype in testtypes:
-                    if atype.startswith('+'):
-                        testargs.update({ atype[1:]: 'true' })
-                    elif atype.startswith('-'):
-                        testargs.update({ atype[1:]: 'false' })
-                    else:
-                        testargs.update({ atype: 'true' })
-
             manifest = TestManifest()
             manifest.read(filepath)
 
-            all_tests = manifest.active_tests(disabled=False)
-            manifest_tests = manifest.active_tests(disabled=False,
+            all_tests = manifest.active_tests(exists=False, disabled=False)
+            manifest_tests = manifest.active_tests(exists=False,
+                                                   disabled=False,
                                                    device=self.device,
                                                    app=self.appName)
             skip_tests = list(set([x['path'] for x in all_tests]) -
@@ -630,9 +639,10 @@ class MarionetteTestRunner(object):
                     return
             return
 
-        self.logger.info('TEST-START %s' % os.path.basename(test))
+            self.logger.info('TEST-START %s' % os.path.basename(test))
 
         self.test_kwargs['expected'] = expected
+        self.test_kwargs['oop'] = oop
         for handler in self.test_handlers:
             if handler.match(os.path.basename(test)):
                 handler.add_tests_to_suite(mod_name,
@@ -705,8 +715,7 @@ class MarionetteTestRunner(object):
                                                for results in results_list])))
         testsuite.setAttribute('errors', str(sum([len(results.errors)
                                              for results in results_list])))
-        if hasattr(results, 'skipped'):
-            testsuite.setAttribute('skips', str(sum([len(results.skipped) +
+        testsuite.setAttribute('skips', str(sum([len(results.skipped) +
                                                      len(results.expectedFailures)
                                                      for results in results_list])))
 

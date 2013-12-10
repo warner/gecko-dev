@@ -24,8 +24,8 @@
 using namespace js;
 using namespace js::jit;
 
-BaselineCompiler::BaselineCompiler(JSContext *cx, HandleScript script)
-  : BaselineCompilerSpecific(cx, script),
+BaselineCompiler::BaselineCompiler(JSContext *cx, TempAllocator &alloc, HandleScript script)
+  : BaselineCompilerSpecific(cx, alloc, script),
     modifiesArguments_(false)
 {
 }
@@ -33,16 +33,16 @@ BaselineCompiler::BaselineCompiler(JSContext *cx, HandleScript script)
 bool
 BaselineCompiler::init()
 {
-    if (!analysis_.init(cx->runtime()->gsnCache))
+    if (!analysis_.init(alloc_, cx->runtime()->gsnCache))
         return false;
 
-    if (!labels_.init(script->length))
+    if (!labels_.init(alloc_, script->length()))
         return false;
 
-    for (size_t i = 0; i < script->length; i++)
+    for (size_t i = 0; i < script->length(); i++)
         new (&labels_[i]) Label();
 
-    if (!frame.init())
+    if (!frame.init(alloc_))
         return false;
 
     return true;
@@ -53,11 +53,11 @@ BaselineCompiler::addPCMappingEntry(bool addIndexEntry)
 {
     // Don't add multiple entries for a single pc.
     size_t nentries = pcMappingEntries_.length();
-    if (nentries > 0 && pcMappingEntries_[nentries - 1].pcOffset == unsigned(pc - script->code))
+    if (nentries > 0 && pcMappingEntries_[nentries - 1].pcOffset == script->pcToOffset(pc))
         return true;
 
     PCMappingEntry entry;
-    entry.pcOffset = pc - script->code;
+    entry.pcOffset = script->pcToOffset(pc);
     entry.nativeOffset = masm.currentOffset();
     entry.slotInfo = getStackTopSlotInfo();
     entry.addIndexEntry = addIndexEntry;
@@ -69,10 +69,10 @@ MethodStatus
 BaselineCompiler::compile()
 {
     IonSpew(IonSpew_BaselineScripts, "Baseline compiling script %s:%d (%p)",
-            script->filename(), script->lineno, script.get());
+            script->filename(), script->lineno(), script.get());
 
     IonSpew(IonSpew_Codegen, "# Emitting baseline code for script %s:%d",
-            script->filename(), script->lineno);
+            script->filename(), script->lineno());
 
     if (cx->typeInferenceEnabled() && !script->ensureHasTypes(cx))
         return Method_Error;
@@ -172,7 +172,7 @@ BaselineCompiler::compile()
     spsPushToggleOffset_.fixup(&masm);
 
     // Note: There is an extra entry in the bytecode type map for the search hint, see below.
-    size_t bytecodeTypeMapEntries = cx->typeInferenceEnabled() ? script->nTypeSets + 1 : 0;
+    size_t bytecodeTypeMapEntries = cx->typeInferenceEnabled() ? script->nTypeSets() + 1 : 0;
 
     BaselineScript *baselineScript = BaselineScript::New(cx, prologueOffset_.offset(),
                                                          spsPushToggleOffset_.offset(),
@@ -190,7 +190,7 @@ BaselineCompiler::compile()
 
     IonSpew(IonSpew_BaselineScripts, "Created BaselineScript %p (raw %p) for %s:%d",
             (void *) script->baselineScript(), (void *) code->raw(),
-            script->filename(), script->lineno);
+            script->filename(), script->lineno());
 
 #ifdef JS_ION_PERF
     writePerfSpewerBaselineProfile(script, code);
@@ -235,21 +235,24 @@ BaselineCompiler::compile()
         uint32_t *bytecodeMap = baselineScript->bytecodeTypeMap();
 
         uint32_t added = 0;
-        for (jsbytecode *pc = script->code; pc < script->code + script->length; pc += GetBytecodeLength(pc)) {
+        for (jsbytecode *pc = script->code(); pc < script->codeEnd(); pc += GetBytecodeLength(pc)) {
             JSOp op = JSOp(*pc);
             if (js_CodeSpec[op].format & JOF_TYPESET) {
-                bytecodeMap[added++] = pc - script->code;
-                if (added == script->nTypeSets)
+                bytecodeMap[added++] = script->pcToOffset(pc);
+                if (added == script->nTypeSets())
                     break;
             }
         }
 
-        JS_ASSERT(added == script->nTypeSets);
+        JS_ASSERT(added == script->nTypeSets());
 
         // The last entry in the last index found, and is used to avoid binary
         // searches for the sought entry when queries are in linear order.
-        bytecodeMap[script->nTypeSets] = 0;
+        bytecodeMap[script->nTypeSets()] = 0;
     }
+
+    if (script->compartment()->debugMode())
+        baselineScript->setDebugMode();
 
     return Method_Compiled;
 }
@@ -453,7 +456,7 @@ BaselineCompiler::emitStackCheck(bool earlyCheck)
 {
     Label skipCall;
     uintptr_t *limitAddr = &cx->runtime()->mainThread.ionStackLimit;
-    uint32_t slotsSize = script->nslots * sizeof(Value);
+    uint32_t slotsSize = script->nslots() * sizeof(Value);
     uint32_t tolerance = earlyCheck ? slotsSize : 0;
 
     masm.movePtr(BaselineStackReg, R1.scratchReg());
@@ -695,7 +698,7 @@ BaselineCompiler::emitDebugTrap()
 #endif
 
     // Add an IC entry for the return offset -> pc mapping.
-    ICEntry icEntry(pc - script->code, false);
+    ICEntry icEntry(script->pcToOffset(pc), false);
     icEntry.setReturnOffset(masm.currentOffset());
     if (!icEntries_.append(icEntry))
         return false;
@@ -735,7 +738,7 @@ BaselineCompiler::emitSPSPop()
 MethodStatus
 BaselineCompiler::emitBody()
 {
-    JS_ASSERT(pc == script->code);
+    JS_ASSERT(pc == script->code());
 
     bool lastOpUnreachable = false;
     uint32_t emittedOps = 0;
@@ -744,7 +747,7 @@ BaselineCompiler::emitBody()
     while (true) {
         JSOp op = JSOp(*pc);
         IonSpew(IonSpew_BaselineOp, "Compiling op @ %d: %s",
-                int(pc - script->code), js_CodeName[op]);
+                int(script->pcToOffset(pc)), js_CodeName[op]);
 
         BytecodeInfo *info = analysis_.maybeInfo(pc);
 
@@ -752,7 +755,7 @@ BaselineCompiler::emitBody()
         if (!info) {
             // Test if last instructions and stop emitting in that case.
             pc += GetBytecodeLength(pc);
-            if (pc >= script->code + script->length)
+            if (pc >= script->codeEnd())
                 break;
 
             lastOpUnreachable = true;
@@ -782,7 +785,7 @@ BaselineCompiler::emitBody()
         // used when we need the native code address for a given pc, for instance
         // for bailouts from Ion, the debugger and exception handling. See
         // PCMappingIndexEntry for more information.
-        bool addIndexEntry = (pc == script->code || lastOpUnreachable || emittedOps > 100);
+        bool addIndexEntry = (pc == script->code() || lastOpUnreachable || emittedOps > 100);
         if (addIndexEntry)
             emittedOps = 0;
         if (!addPCMappingEntry(addIndexEntry))
@@ -808,7 +811,7 @@ OPCODE_LIST(EMIT_OP)
 
         // Test if last instructions and stop emitting in that case.
         pc += GetBytecodeLength(pc);
-        if (pc >= script->code + script->length)
+        if (pc >= script->codeEnd())
             break;
 
         emittedOps++;
@@ -2362,6 +2365,10 @@ BaselineCompiler::emit_JSOP_CALLARG()
 bool
 BaselineCompiler::emit_JSOP_SETARG()
 {
+    // Ionmonkey can't inline functions with SETARG with magic arguments.
+    if (!script->argsObjAliasesFormals() && script->argumentsAliasesFormals())
+        script->uninlineable = true;
+
     modifiesArguments_ = true;
 
     uint32_t arg = GET_SLOTNO(pc);
@@ -2501,6 +2508,8 @@ BaselineCompiler::emit_JSOP_THROW()
 bool
 BaselineCompiler::emit_JSOP_TRY()
 {
+    // Ionmonkey can't inline function with JSOP_TRY.
+    script->uninlineable = true;
     return true;
 }
 
@@ -2524,7 +2533,7 @@ BaselineCompiler::emit_JSOP_GOSUB()
     // this GOSUB.
     frame.push(BooleanValue(false));
 
-    int32_t nextOffset = GetNextPc(pc) - script->code;
+    int32_t nextOffset = script->pcToOffset(GetNextPc(pc));
     frame.push(Int32Value(nextOffset));
 
     // Jump to the finally block.
@@ -2714,7 +2723,7 @@ BaselineCompiler::emitReturn()
     // Only emit the jump if this JSOP_RETRVAL is not the last instruction.
     // Not needed for last instruction, because last instruction flows
     // into return label.
-    if (pc + GetBytecodeLength(pc) < script->code + script->length)
+    if (pc + GetBytecodeLength(pc) < script->codeEnd())
         masm.jump(&return_);
 
     return true;

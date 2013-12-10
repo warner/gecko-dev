@@ -51,7 +51,7 @@ _SUBDIR_CONFIG_ARGS="$ac_configure_args"
 dnl Set the version number of the libs included with mozilla
 dnl ========================================================
 MOZJPEG=62
-MOZPNG=10606
+MOZPNG=10607
 NSPR_VERSION=4
 NSS_VERSION=3
 
@@ -808,7 +808,6 @@ dnl ========================================================
 dnl = Mac OS X SDK support
 dnl ========================================================
 MACOS_SDK_DIR=
-NEXT_ROOT=
 MOZ_ARG_WITH_STRING(macos-sdk,
 [  --with-macos-sdk=dir    Location of platform SDK to use (Mac OS X only)],
     MACOS_SDK_DIR=$withval)
@@ -830,10 +829,8 @@ if test -z "${MACOS_PRIVATE_FRAMEWORKS_DEFAULTED}"; then
 fi
 
 dnl MACOS_SDK_DIR will be set to the SDK location whenever one is in use.
-dnl NEXT_ROOT will be set and exported only if it's needed.
 AC_SUBST(MACOS_SDK_DIR)
 AC_SUBST(MACOS_PRIVATE_FRAMEWORKS_DIR)
-AC_SUBST(NEXT_ROOT)
 
 if test "$MACOS_SDK_DIR"; then
   dnl Sync this section with the ones in NSPR and NSS.
@@ -1698,7 +1695,7 @@ case "$host" in
 *mingw*)
     if test -n "$_WIN32_MSVC"; then
         HOST_AR=lib
-        HOST_AR_FLAGS='-NOLOGO -OUT:"$@"'
+        HOST_AR_FLAGS='-NOLOGO -OUT:$@'
         HOST_CFLAGS="$HOST_CFLAGS -TC -nologo -Fd\$(HOST_PDBFILE)"
         HOST_RANLIB='echo ranlib'
     else
@@ -2002,9 +1999,6 @@ ia64*-hpux*)
     	CFLAGS="$CFLAGS -mieee"
     	CXXFLAGS="$CXXFLAGS -mieee"
     ;;
-    i*86)
-    	USE_ELF_DYNSTR_GC=1
-    ;;
     esac
 
     if test -z "$MC"; then
@@ -2054,7 +2048,7 @@ ia64*-hpux*)
             AS="$(basename "$AS_BIN")"
         fi
         AR='lib'
-        AR_FLAGS='-NOLOGO -OUT:"$@"'
+        AR_FLAGS='-NOLOGO -OUT:$@'
         AR_EXTRACT=
         RANLIB='echo not_ranlib'
         STRIP='echo not_strip'
@@ -3105,6 +3099,9 @@ AC_CACHE_CHECK(
             #ifdef linux
             #define _BSD_SOURCE 1
             #endif
+            #include <sys/types.h>
+            #include <netinet/in.h>
+            #include <arpa/nameser.h>
             #include <resolv.h>
             ],
             [int foo = res_ninit(&_res);],
@@ -3627,6 +3624,21 @@ esac
 AC_SUBST(NIGHTLY_BUILD)
 AC_SUBST(RELEASE_BUILD)
 
+dnl ========================================================
+dnl Disable compiling sources in unified mode.
+dnl ========================================================
+
+if test -z "$NIGHTLY_BUILD"; then
+    MOZ_DISABLE_UNIFIED_COMPILATION=1
+fi
+
+MOZ_ARG_DISABLE_BOOL(unified-compilation,
+[  --disable-unified-compilation
+                          Disable unified compilation of some C/C++ sources],
+    MOZ_DISABLE_UNIFIED_COMPILATION=1,
+    MOZ_DISABLE_UNIFIED_COMPILATION=)
+AC_SUBST(MOZ_DISABLE_UNIFIED_COMPILATION)
+
 dnl system libevent Support
 dnl ========================================================
 MOZ_ARG_WITH_STRING(system-libevent,
@@ -3770,6 +3782,8 @@ if test "$MOZ_LINKER" = 1 -a "$MOZ_NATIVE_ZLIB" != 1; then
     AC_MSG_ERROR([Custom dynamic linker requires --with-system-zlib])
 fi
 
+MOZ_PNG_ARM_NEON=
+
 if test -z "$SKIP_LIBRARY_CHECKS"; then
 dnl system BZIP2 Support
 dnl ========================================================
@@ -3844,13 +3858,9 @@ if test "${PNG_DIR}" -a -d "${PNG_DIR}" -a "$MOZ_NATIVE_PNG" = 1; then
     MOZ_PNG_LIBS="-L${PNG_DIR}/lib ${MOZ_PNG_LIBS}"
 fi
 
-MOZ_PNG_ARM_NEON=
-if test "$MOZ_NATIVE_PNG" != 1 -a "$CPU_ARCH" = "arm" ; then
-    MOZ_PNG_ARM_NEON=1
-fi
-AC_SUBST(MOZ_PNG_ARM_NEON)
-
 fi # SKIP_LIBRARY_CHECKS
+
+AC_SUBST(MOZ_PNG_ARM_NEON)
 
 dnl system HunSpell Support
 dnl ========================================================
@@ -3882,6 +3892,17 @@ if test -n "$MOZ_NATIVE_FFI"; then
     fi
     MOZ_JS_STATIC_LIBS="$MOZ_JS_STATIC_LIBS $MOZ_FFI_LIBS"
 fi
+
+# split JS out by default to avoid VS2005 PGO crash (bug 591836).
+if test "$OS_ARCH" = "WINNT"; then
+  JS_SHARED_LIBRARY=1
+fi
+
+MOZ_ARG_ENABLE_BOOL(shared-js,
+[  --enable-shared-js
+                          Create a shared JavaScript library.],
+    JS_SHARED_LIBRARY=1,
+    JS_SHARED_LIBRARY=)
 
 dnl ========================================================
 dnl System ICU Support
@@ -3927,9 +3948,6 @@ MOZ_JSDEBUGGER=1
 MOZ_AUTH_EXTENSION=1
 MOZ_OGG=1
 MOZ_RAW=
-MOZ_SPEEX_RESAMPLER=1
-MOZ_SOUNDTOUCH=1
-MOZ_CUBEB=
 MOZ_VORBIS=
 MOZ_TREMOR=
 MOZ_WAVE=1
@@ -3939,6 +3957,7 @@ MOZ_OPUS=1
 MOZ_WEBM=1
 MOZ_DIRECTSHOW=
 MOZ_WMF=
+MOZ_FMP4=
 MOZ_WEBRTC=1
 MOZ_PEERCONNECTION=
 MOZ_SRTP=
@@ -3950,7 +3969,7 @@ MOZ_MEDIA_NAVIGATOR=
 MOZ_OMX_PLUGIN=
 MOZ_VP8=
 MOZ_VP8_ERROR_CONCEALMENT=
-MOZ_VP8_ENCODER=
+MOZ_VP8_ENCODER=1
 MOZ_WEBSPEECH=1
 VPX_AS=
 VPX_ASFLAGS=
@@ -3964,7 +3983,6 @@ LIBJPEG_TURBO_ASFLAGS=
 LIBJPEG_TURBO_X86_ASM=
 LIBJPEG_TURBO_X64_ASM=
 LIBJPEG_TURBO_ARM_ASM=
-MOZ_PANGO=1
 MOZ_PERMISSIONS=1
 MOZ_PLACES=1
 MOZ_SOCIAL=1
@@ -4327,7 +4345,6 @@ cairo-qt)
     fi
 
     MOZ_WEBGL=1
-    USE_ELF_DYNSTR_GC=
     USE_FC_FREETYPE=1
     TK_CFLAGS='$(MOZ_QT_CFLAGS)'
     TK_LIBS='$(MOZ_QT_LIBS)'
@@ -4714,33 +4731,15 @@ AC_SUBST(MOZ_DISTRIBUTION_ID)
 
 
 dnl ========================================================
-dnl complex text support off by default
-dnl ========================================================
-MOZ_ARG_DISABLE_BOOL(pango,
-[  --disable-pango         Disable usage of Pango ],
-    MOZ_PANGO=,
-    MOZ_PANGO=1)
-
-dnl ========================================================
 dnl = Pango
 dnl ========================================================
 if test "$MOZ_ENABLE_GTK" -o "$MOZ_ENABLE_QT"
 then
-    AC_SUBST(MOZ_PANGO)
+    PKG_CHECK_MODULES(_PANGOCHK, pango >= $PANGO_VERSION)
 
-    if test "$MOZ_PANGO"
-    then
-        PKG_CHECK_MODULES(_PANGOCHK, pango >= $PANGO_VERSION)
-
-        PKG_CHECK_MODULES(MOZ_PANGO, pango >= $PANGO_VERSION pangoft2 >= $PANGO_VERSION pangocairo >= $PANGO_VERSION)
-        AC_SUBST(MOZ_PANGO_CFLAGS)
-        AC_SUBST(MOZ_PANGO_LIBS)
-        AC_DEFINE(MOZ_PANGO)
-    else
-        PKG_CHECK_MODULES(FT2, freetype2 > 6.1.0)
-        AC_SUBST(FT2_CFLAGS)
-        AC_SUBST(FT2_LIBS)
-    fi
+    PKG_CHECK_MODULES(MOZ_PANGO, pango >= $PANGO_VERSION pangoft2 >= $PANGO_VERSION pangocairo >= $PANGO_VERSION)
+    AC_SUBST(MOZ_PANGO_CFLAGS)
+    AC_SUBST(MOZ_PANGO_LIBS)
 fi
 
 dnl ========================================================
@@ -5116,7 +5115,6 @@ if test -n "$MOZ_WEBRTC"; then
     AC_DEFINE(MOZ_WEBRTC_ASSERT_ALWAYS)
     MOZ_RAW=1
     MOZ_VP8=1
-    MOZ_VP8_ENCODER=1
     MOZ_VP8_ERROR_CONCEALMENT=1
 
 dnl enable once Signaling lands
@@ -5189,7 +5187,6 @@ MOZ_ARG_DISABLE_BOOL(ogg,
 
 if test -n "$MOZ_OGG"; then
     AC_DEFINE(MOZ_OGG)
-    MOZ_CUBEB=1
 
     dnl Checks for __attribute__(aligned()) directive
     AC_CACHE_CHECK([__attribute__ ((aligned ())) support],
@@ -5249,7 +5246,6 @@ MOZ_ARG_DISABLE_BOOL(directshow,
 
 if test -n "$MOZ_DIRECTSHOW"; then
     AC_DEFINE(MOZ_DIRECTSHOW)
-    MOZ_CUBEB=1
 fi;
 
 dnl ========================================================
@@ -5269,8 +5265,27 @@ MOZ_ARG_DISABLE_BOOL(wmf,
 
 if test -n "$MOZ_WMF"; then
     AC_DEFINE(MOZ_WMF)
-    MOZ_CUBEB=1
 fi;
+
+dnl ========================================================
+dnl = Built-in fragmented MP4 support.
+dnl ========================================================
+if test -n "$MOZ_WMF"; then
+    dnl Enable fragmented MP4 parser on Windows by default.
+    dnl We will also need to enable it on other platforms as we implement
+    dnl platform decoder support there too.
+    MOZ_FMP4=1
+fi
+
+MOZ_ARG_DISABLE_BOOL(fmp4,
+[  --disable-fmp4  Disable support for in built Fragmented MP4 parsing],
+    MOZ_FMP4=,
+    MOZ_FMP4=1)
+
+if test -n "$MOZ_FMP4"; then
+    AC_DEFINE(MOZ_FMP4)
+fi;
+
 
 dnl ========================================================
 dnl = Enable media plugin support
@@ -5363,7 +5378,7 @@ if test -n "$MOZ_VP8"; then
         dnl === libvpx Version check ===
         dnl ============================
         dnl Check to see if we have a system libvpx package.
-        PKG_CHECK_MODULES(MOZ_LIBVPX, vpx >= 1.0.0)
+        PKG_CHECK_MODULES(MOZ_LIBVPX, vpx >= 1.3.0)
 
         MOZ_CHECK_HEADER([vpx/vpx_decoder.h], [], 
          [AC_MSG_ERROR([Couldn't find vpx/vpx_decoder.h which is required for build with system libvpx. Use --without-system-libvpx to build with in-tree libvpx.])])
@@ -5380,7 +5395,6 @@ AC_SUBST(MOZ_LIBVPX_CFLAGS)
 AC_SUBST(MOZ_LIBVPX_LIBS)
 
 if test "$MOZ_WEBM" -o "$MOZ_OGG"; then
-    MOZ_CUBEB=1
     if test "$MOZ_SAMPLE_TYPE_FLOAT32"; then
         MOZ_VORBIS=1
     else
@@ -5437,7 +5451,7 @@ if test -n "$MOZ_VP8" -a -z "$MOZ_NATIVE_LIBVPX"; then
     ;;
     *:x86)
       if $CC -E -dM -</dev/null | grep -q __ELF__; then
-        VPX_ASFLAGS="-f elf32 -rnasm -pnasm"
+        VPX_ASFLAGS="-f elf32 -rnasm -pnasm -DPIC"
         VPX_X86_ASM=1
       fi
     ;;
@@ -5482,24 +5496,11 @@ MOZ_ARG_DISABLE_BOOL(wave,
 
 if test -n "$MOZ_WAVE"; then
     AC_DEFINE(MOZ_WAVE)
-    MOZ_CUBEB=1
 fi
 
 dnl ========================================================
-dnl = Handle dependent CUBEB and MEDIA defines
+dnl = Handle dependent MEDIA defines
 dnl ========================================================
-
-if test -n "$MOZ_SPEEX_RESAMPLER"; then
-    AC_DEFINE(MOZ_SPEEX_RESAMPLER)
-fi
-
-if test -n "$MOZ_SOUNDTOUCH"; then
-    AC_DEFINE(MOZ_SOUNDTOUCH)
-fi
-
-if test -n "$MOZ_CUBEB"; then
-    AC_DEFINE(MOZ_CUBEB)
-fi
 
 if test -n "$MOZ_OPUS" -a -z "$MOZ_OGG"; then
     AC_MSG_ERROR([MOZ_OPUS requires MOZ_OGG which is disabled.])
@@ -5530,12 +5531,12 @@ if test -n "$MOZ_OPUS"; then
     AC_DEFINE(MOZ_OPUS)
 fi
 
-dnl ====================================================
-dnl = Check alsa availability on Linux if using libcubeb
-dnl ====================================================
+dnl ==================================
+dnl = Check alsa availability on Linux
+dnl ==================================
 
-dnl If using libcubeb with Linux, ensure that the alsa library is available
-if test -n "$MOZ_CUBEB" -a "$OS_TARGET" = "Linux"; then
+dnl If using Linux, ensure that the alsa library is available
+if test "$OS_TARGET" = "Linux"; then
     MOZ_ALSA=1
 fi
 
@@ -5545,7 +5546,6 @@ MOZ_ARG_ENABLE_BOOL(alsa,
    MOZ_ALSA=)
 
 if test -n "$MOZ_ALSA"; then
-    AC_DEFINE(MOZ_CUBEB)
     PKG_CHECK_MODULES(MOZ_ALSA, alsa, ,
          [echo "$MOZ_ALSA_PKG_ERRORS"
           AC_MSG_ERROR([Need alsa for Ogg, Wave or WebM decoding on Linux.  Disable with --disable-ogg --disable-wave --disable-webm.  (On Ubuntu, you might try installing the package libasound2-dev.)])])
@@ -5559,8 +5559,8 @@ dnl ========================================================
 dnl = Disable PulseAudio
 dnl ========================================================
 
-dnl If using libcubeb with Linux, ensure that the PA library is available
-if test -n "$MOZ_CUBEB" -a "$OS_TARGET" = "Linux" -a -z "$MOZ_B2G"; then
+dnl If using Linux, ensure that the PA library is available
+if test "$OS_TARGET" = "Linux" -a -z "$MOZ_B2G"; then
     MOZ_PULSEAUDIO=1
 fi
 
@@ -5570,7 +5570,6 @@ MOZ_ARG_DISABLE_BOOL(pulseaudio,
    MOZ_PULSEAUDIO=1)
 
 if test -n "$MOZ_PULSEAUDIO"; then
-    AC_DEFINE(MOZ_CUBEB)
     if test -z "$gonkdir"; then
         PKG_CHECK_MODULES(MOZ_PULSEAUDIO, libpulse, ,
              [echo "$MOZ_PULSEAUDIO_PKG_ERRORS"
@@ -6129,7 +6128,6 @@ if test -n "$MOZ_TREE_FREETYPE"; then
    CAIRO_FT_CFLAGS='-I$(topsrcdir)/modules/freetype2/include'
    FT2_LIBS='$(call EXPAND_LIBNAME_PATH,freetype,$(DEPTH)/modules/freetype2/.libs)'
    CAIRO_FT_OSLIBS=''
-   CAIRO_FT_LIBS='$(call EXPAND_LIBNAME_PATH,freetype,$(DEPTH)/modules/freetype2/.libs)'
    AC_DEFINE(HAVE_FT_BITMAP_SIZE_Y_PPEM)
    AC_DEFINE(HAVE_FT_GLYPHSLOT_EMBOLDEN)
    AC_DEFINE(HAVE_FT_LOAD_SFNT_TABLE)
@@ -6294,11 +6292,8 @@ MOZ_ARG_DISABLE_BOOL(tests,
     ENABLE_TESTS=1 )
 
 if test -n "$ENABLE_TESTS"; then
-    MOZ_ENABLE_GTEST=1
     GTEST_HAS_RTTI=0
-    AC_DEFINE(MOZ_ENABLE_GTEST)
     AC_DEFINE_UNQUOTED(GTEST_HAS_RTTI, 0)
-    AC_SUBST(MOZ_ENABLE_GTEST)
     AC_SUBST(GTEST_HAS_RTTI)
     if test -n "$_WIN32_MSVC"; then
           AC_DEFINE_UNQUOTED(_VARIADIC_MAX, 10)
@@ -6761,7 +6756,6 @@ MOZ_ARG_ENABLE_BOOL(trace-malloc,
 if test "$NS_TRACE_MALLOC"; then
   # Please, Mr. Linker Man, don't take away our symbol names
   MOZ_COMPONENTS_VERSION_SCRIPT_LDFLAGS=
-  USE_ELF_DYNSTR_GC=
   AC_DEFINE(NS_TRACE_MALLOC)
 fi
 AC_SUBST(NS_TRACE_MALLOC)
@@ -6775,11 +6769,12 @@ MOZ_ARG_ENABLE_BOOL(dmd,
     MOZ_DMD=1,
     MOZ_DMD= )
 
-if test "$NS_TRACE_MALLOC"; then        # trace-malloc disables DMD
-    MOZ_DMD=
+dnl The two options are conflicting. Fails the configure to alert the user.
+if test "$NS_TRACE_MALLOC" -a "$MOZ_DMD"; then
+    AC_MSG_ERROR([--enable-trace-malloc and --enable-dmd are conflicting options])
 fi
+
 if test "$MOZ_DMD"; then
-    USE_ELF_DYNSTR_GC=
     AC_DEFINE(MOZ_DMD)
 
     if test "${CPU_ARCH}" = "arm"; then
@@ -6839,6 +6834,11 @@ MOZ_ARG_ENABLE_BOOL(replace-malloc,
 [  --enable-replace-malloc   Enable ability to dynamically replace the malloc implementation],
     MOZ_REPLACE_MALLOC=1,
     MOZ_REPLACE_MALLOC= )
+
+dnl The two options are conflicting. Fails the configure to alert the user.
+if test "$NS_TRACE_MALLOC" -a "$MOZ_REPLACE_MALLOC"; then
+    AC_MSG_ERROR([--enable-trace-malloc and --enable-replace-malloc are conflicting options])
+fi
 
 if test -n "$MOZ_REPLACE_MALLOC" -a -z "$MOZ_MEMORY"; then
     dnl We don't want to enable jemalloc unconditionally because it may be a
@@ -7144,14 +7144,6 @@ MOZ_ARG_ENABLE_BOOL(install-strip,
     PKG_SKIP_STRIP=1)
 
 dnl ========================================================
-dnl = --enable-elf-dynstr-gc
-dnl ========================================================
-MOZ_ARG_ENABLE_BOOL(elf-dynstr-gc,
-[  --enable-elf-dynstr-gc  Enable elf dynstr garbage collector (opt builds only)],
-    USE_ELF_DYNSTR_GC=1,
-    USE_ELF_DYNSTR_GC= )
-
-dnl ========================================================
 dnl = --disable-elf-hack
 dnl ========================================================
 
@@ -7317,7 +7309,7 @@ AC_SUBST(MOZ_B2G_BT_BLUEDROID)
 dnl ========================================================
 dnl = Enable NFC Interface for B2G (Gonk usually)
 dnl ========================================================
-MOZ_ARG_ENABLE_BOOL(b2g-nfc,
+MOZ_ARG_ENABLE_BOOL(nfc,
 [  --enable-nfc         Set compile flags necessary for compiling NFC API ],
     MOZ_NFC=1,
     MOZ_NFC= )
@@ -7712,19 +7704,7 @@ dnl =
 dnl ========================================================
 MOZ_ARG_HEADER(Static build options)
 
-# split JS out by default to avoid VS2005 PGO crash (bug 591836).
-if test "$OS_ARCH" = "WINNT"; then
-  ENABLE_SHARED_JS=1
-fi
-
-MOZ_ARG_ENABLE_BOOL(shared-js,
-[  --enable-shared-js
-                          Create a shared JavaScript library.],
-    ENABLE_SHARED_JS=1,
-    ENABLE_SHARED_JS=)
-
-if test -n "$ENABLE_SHARED_JS"; then
-  JS_SHARED_LIBRARY=1
+if test -n "$JS_SHARED_LIBRARY"; then
   MOZ_JS_LIBS="$MOZ_JS_SHARED_LIBS"
 else
   MOZ_JS_LIBS="$MOZ_JS_STATIC_LIBS"
@@ -7734,6 +7714,20 @@ AC_SUBST(JS_SHARED_LIBRARY)
 
 AC_SUBST(LIBXUL_LIBS)
 XPCOM_LIBS="$LIBXUL_LIBS"
+
+if test "$OS_ARCH" = "WINNT"; then
+  GKMEDIAS_SHARED_LIBRARY=1
+fi
+AC_SUBST(GKMEDIAS_SHARED_LIBRARY)
+
+if test -z "$MOZ_NATIVE_ZLIB"; then
+if test -n "$JS_SHARED_LIBRARY" -o "$GKMEDIAS_SHARED_LIBRARY"; then
+  ZLIB_IN_MOZGLUE=1
+  AC_DEFINE(ZLIB_IN_MOZGLUE)
+fi
+fi
+
+AC_SUBST(ZLIB_IN_MOZGLUE)
 
 dnl ========================================================
 dnl =
@@ -7747,7 +7741,7 @@ dnl ========================================================
 
 if test -z "$SKIP_PATH_CHECKS"; then
 if test -z "${GLIB_CFLAGS}" -o -z "${GLIB_LIBS}" ; then
-    if test "$MOZ_ENABLE_GTK2" -o "$USE_ELF_DYNSTR_GC" ; then
+    if test "$MOZ_ENABLE_GTK2" ; then
         PKG_CHECK_MODULES(GLIB, glib-2.0 >= 1.3.7 gobject-2.0)
     fi
 fi
@@ -7954,7 +7948,6 @@ if test "$MOZ_TREE_CAIRO"; then
         MOZ_ENABLE_CAIRO_FT=1
         CAIRO_FT_CFLAGS="-I${MZFTCFGFT2}/include"
         CAIRO_FT_OSLIBS="-L${MZFTCFGFT2}/lib -lmozft -lmzfntcfg"
-        CAIRO_FT_LIBS=""
         ;;
     esac
     if test "$USE_FC_FREETYPE"; then
@@ -7987,7 +7980,6 @@ if test "$MOZ_TREE_CAIRO"; then
     AC_SUBST(QT_SURFACE_FEATURE)
     AC_SUBST(TEE_SURFACE_FEATURE)
 
-    MOZ_CAIRO_LIBS='$(call EXPAND_LIBNAME_PATH,mozcairo,$(DEPTH)/gfx/cairo/cairo/src)'" $CAIRO_FT_LIBS"
     MOZ_CAIRO_OSLIBS='${CAIRO_FT_OSLIBS}'
 
     if test "$MOZ_X11"; then
@@ -8015,35 +8007,9 @@ AC_SUBST(MOZ_CAIRO_OSLIBS)
 AC_SUBST(MOZ_TREE_PIXMAN)
 
 dnl ========================================================
-dnl qcms
-dnl ========================================================
-
-QCMS_LIBS='$(DEPTH)/gfx/qcms/$(LIB_PREFIX)mozqcms.$(LIB_SUFFIX)'
-AC_SUBST(QCMS_LIBS)
-
-dnl ========================================================
-dnl HarfBuzz
-dnl ========================================================
-MOZ_HARFBUZZ_LIBS='$(DEPTH)/gfx/harfbuzz/src/$(LIB_PREFIX)mozharfbuzz.$(LIB_SUFFIX)'
-AC_SUBST(MOZ_HARFBUZZ_LIBS)
-
-dnl ========================================================
-dnl SIL Graphite
-dnl ========================================================
-MOZ_GRAPHITE_LIBS='$(DEPTH)/gfx/graphite2/src/$(LIB_PREFIX)mozgraphite2.$(LIB_SUFFIX)'
-AC_SUBST(MOZ_GRAPHITE_LIBS)
-
-dnl ========================================================
-dnl OTS
-dnl ========================================================
-MOZ_OTS_LIBS='$(DEPTH)/gfx/ots/src/$(LIB_PREFIX)mozots.$(LIB_SUFFIX)'
-AC_SUBST(MOZ_OTS_LIBS)
-
-dnl ========================================================
 dnl Skia 
 dnl ========================================================
 if test "$MOZ_ENABLE_SKIA"; then
-  MOZ_SKIA_LIBS='$(DEPTH)/gfx/skia/$(LIB_PREFIX)skia.$(LIB_SUFFIX)'
   AC_DEFINE(MOZ_ENABLE_SKIA)
   AC_DEFINE(USE_SKIA)
   if test "${MOZ_WIDGET_TOOLKIT}" = "android" -o x"$MOZ_WIDGET_TOOLKIT" = x"gonk"; then
@@ -8058,11 +8024,8 @@ if test "$MOZ_ENABLE_SKIA"; then
     AC_DEFINE(USE_SKIA_GPU)
     AC_SUBST(MOZ_ENABLE_SKIA_GPU)
   fi
-else
-  MOZ_SKIA_LIBS=
 fi
 AC_SUBST(MOZ_ENABLE_SKIA)
-AC_SUBST(MOZ_SKIA_LIBS)
 
 dnl ========================================================
 dnl disable xul
@@ -8344,7 +8307,6 @@ AC_SUBST(MOZ_DISABLE_GECKOVIEW)
 AC_SUBST(ENABLE_STRIP)
 AC_SUBST(PKG_SKIP_STRIP)
 AC_SUBST(STRIP_FLAGS)
-AC_SUBST(USE_ELF_DYNSTR_GC)
 AC_SUBST(USE_ELF_HACK)
 AC_SUBST(INCREMENTAL_LINKER)
 AC_SUBST(MOZ_COMPONENTS_VERSION_SCRIPT_LDFLAGS)
@@ -8647,15 +8609,13 @@ AC_SUBST(MOZ_NSS_PATCH)
 AC_SUBST(MOZ_APP_COMPONENT_LIBS)
 AC_SUBST(MOZ_APP_EXTRA_LIBS)
 
-AC_SUBST(MOZ_SPEEX_RESAMPLER)
-AC_SUBST(MOZ_SOUNDTOUCH)
-AC_SUBST(MOZ_CUBEB)
 AC_SUBST(MOZ_WAVE)
 AC_SUBST(MOZ_VORBIS)
 AC_SUBST(MOZ_TREMOR)
 AC_SUBST(MOZ_OPUS)
 AC_SUBST(MOZ_WEBM)
 AC_SUBST(MOZ_WMF)
+AC_SUBST(MOZ_FMP4)
 AC_SUBST(MOZ_DIRECTSHOW)
 AC_SUBST(MOZ_MEDIA_PLUGINS)
 AC_SUBST(MOZ_APPLEMEDIA)
@@ -8733,13 +8693,6 @@ if test "$MOZ_X11"; then
 
 fi # MOZ_X11
 
-dnl Check for headers, etc. needed by WebGL.
-if test "$MOZ_GL_DEFAULT_PROVIDER" = "GLX"; then
-    MOZ_CHECK_HEADER(GL/glx.h)
-    if test "$ac_cv_header_GL_glx_h" != "yes"; then
-        AC_MSG_ERROR([Can't find header GL/glx.h for WebGL (install mesa-common-dev (Ubuntu), mesa-libGL-devel (Fedora), or Mesa-devel (openSUSE))])
-    fi
-fi # MOZ_GL_DEFAULT_PROVIDER=GLX
 fi # COMPILE_ENVIRONMENT
 
 dnl Set various defines and substitutions
@@ -8798,6 +8751,81 @@ HAVE_SYS_MOUNT_H
 "
 
 AC_SUBST(STLPORT_LIBS)
+
+MOZ_ARG_WITH_STRING(intl-api,
+[  --with-intl-api, --with-intl-api=build, --without-intl-api
+    Determine the status of the ECMAScript Internationalization API.  The first
+    (or lack of any of these) builds and exposes the API.  The second builds it
+    but doesn't use ICU or expose the API to script.  The third doesn't build
+    ICU at all.],
+    _INTL_API=$withval,
+    _INTL_API=yes)
+
+WITH_INTL="--with-intl-api=$_INTL_API"
+ENABLE_INTL_API=
+case "$_INTL_API" in
+no)
+    ;;
+build)
+    ENABLE_INTL_API=1
+    ;;
+yes)
+    ENABLE_INTL_API=1
+    ;;
+*)
+    AC_MSG_ERROR([Invalid value passed to --with-intl-api: $_INTL_API])
+    ;;
+esac
+
+if test -n "$ENABLE_INTL_API"; then
+if test "$MOZ_BUILD_APP" = "browser"; then
+    WITH_INTL="--with-intl-api"
+else
+    # Internationalization isn't built or exposed by default in non-desktop
+    # builds.  Bugs to enable:
+    #
+    #   Android:  bug 864843
+    #   B2G:      bug 866301
+    WITH_INTL="--without-intl-api"
+    ENABLE_INTL_API=
+fi
+fi
+
+dnl Settings for the implementation of the ECMAScript Internationalization API
+if test -n "$ENABLE_INTL_API"; then
+    AC_DEFINE(ENABLE_INTL_API)
+
+    MOZ_CONFIG_ICU()
+
+    dnl Build ICU as a shared library for shared js builds.
+    if test -z "$MOZ_NATIVE_ICU" -a -n "$JS_SHARED_LIBRARY"; then
+        case "$OS_TARGET" in
+            WINNT)
+                ICU_LIB_NAMES="icuin icuuc icudt"
+                DBG_SUFFIX=
+                if test -n "$MOZ_DEBUG"; then
+                    DBG_SUFFIX=d
+                fi
+                MOZ_ICU_LIBS='$(foreach lib,$(ICU_LIB_NAMES),$(DEPTH)/js/src/intl/icu/target/lib/$(LIB_PREFIX)$(lib)$(DBG_SUFFIX).$(LIB_SUFFIX))'
+                ;;
+            Darwin)
+                ICU_LIB_NAMES="icui18n icuuc icudata"
+                MOZ_ICU_LIBS='$(foreach lib,$(ICU_LIB_NAMES),$(DEPTH)/js/src/intl/icu/target/lib/$(DLL_PREFIX)$(lib).$(MOZ_ICU_VERSION)$(DLL_SUFFIX))'
+                ;;
+            Linux|DragonFly|FreeBSD|NetBSD|OpenBSD)
+                ICU_LIB_NAMES="icui18n icuuc icudata"
+                MOZ_ICU_LIBS='$(foreach lib,$(ICU_LIB_NAMES),$(DEPTH)/js/src/intl/icu/target/lib/$(DLL_PREFIX)$(lib)$(DLL_SUFFIX).$(MOZ_ICU_VERSION))'
+                ;;
+            *)
+                AC_MSG_ERROR([ECMAScript Internationalization API is not yet supported on this platform])
+        esac
+    fi
+fi
+
+AC_SUBST(DBG_SUFFIX)
+AC_SUBST(ENABLE_INTL_API)
+AC_SUBST(ICU_LIB_NAMES)
+AC_SUBST(MOZ_ICU_LIBS)
 
 export WRITE_MOZINFO=1
 AC_OUTPUT()
@@ -8977,7 +9005,7 @@ fi
 # Run jemalloc configure script
 
 if test -z "$MOZ_NATIVE_JEMALLOC" -a "$MOZ_MEMORY" && test -n "$MOZ_JEMALLOC3" -o -n "$MOZ_REPLACE_MALLOC"; then
-  ac_configure_args="$_SUBDIR_CONFIG_ARGS --build=$build --host=$target --enable-stats --with-jemalloc-prefix=je_"
+  ac_configure_args="--build=$build --host=$target --enable-stats --with-jemalloc-prefix=je_"
   if test -n "$MOZ_REPLACE_MALLOC"; then
     # When using replace_malloc, we always want memalign and valloc exported from jemalloc.
     ac_configure_args="$ac_configure_args ac_cv_func_memalign=yes"
@@ -9172,26 +9200,6 @@ dist=$MOZ_BUILD_ROOT/dist
 ac_configure_args="$_SUBDIR_CONFIG_ARGS"
 ac_configure_args="$ac_configure_args --enable-threadsafe"
 
-MOZ_ARG_WITH_STRING(intl-api,
-[  --with-intl-api, --with-intl-api=build, --without-intl-api
-    Determine the status of the ECMAScript Internationalization API.  The first
-    (or lack of any of these) builds and exposes the API.  The second builds it
-    but doesn't use ICU or expose the API to script.  The third doesn't build
-    ICU at all.],
-    WITH_INTL="--with-intl-api=$withval"
-)
-if test -z "$WITH_INTL"; then
-if test "$MOZ_BUILD_APP" = "browser"; then
-    WITH_INTL="--with-intl-api"
-else
-    # Internationalization isn't built or exposed by default in non-desktop
-    # builds.  Bugs to enable:
-    #
-    #   Android:  bug 864843
-    #   B2G:      bug 866301
-    WITH_INTL="--without-intl-api"
-fi
-fi
 ac_configure_args="$ac_configure_args $WITH_INTL"
 
 if test "$BUILD_CTYPES"; then
@@ -9219,7 +9227,7 @@ fi
 if test -n "$MOZ_GLUE_PROGRAM_LDFLAGS"; then
    export MOZ_GLUE_PROGRAM_LDFLAGS
 fi
-if test "$MOZ_NATIVE_ZLIB" != 1 -a "$OS_ARCH" = "WINNT"; then
+if test -n "$ZLIB_IN_MOZGLUE"; then
    MOZ_ZLIB_LIBS=
 fi
 export MOZ_NATIVE_ZLIB
@@ -9234,6 +9242,7 @@ export STLPORT_LDFLAGS
 export STLPORT_LIBS
 export JS_STANDALONE=no
 export MOZ_LINKER
+export ZLIB_IN_MOZGLUE
 
 if ! test -e js; then
     mkdir js

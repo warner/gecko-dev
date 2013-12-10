@@ -32,7 +32,6 @@
 #include "nsIXPConnect.h"
 #include "nsIObserverService.h"
 #include "nsIScriptSecurityManager.h"
-#include "nsIURI.h"
 #include "nsIFileURL.h"
 #include "nsIJARURI.h"
 #include "nsNetUtil.h"
@@ -128,7 +127,7 @@ Dump(JSContext *cx, unsigned argc, Value *vp)
 #endif
 #ifdef XP_WIN
     if (IsDebuggerPresent()) {
-      OutputDebugStringW(reinterpret_cast<const PRUnichar*>(chars));
+      OutputDebugStringW(reinterpret_cast<const wchar_t*>(chars));
     }
 #endif
     fputs(utf8str.get(), stdout);

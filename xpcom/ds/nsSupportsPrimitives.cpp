@@ -7,6 +7,8 @@
 #include "nsMemory.h"
 #include "prprf.h"
 
+using mozilla::fallible_t;
+
 /***************************************************************************/
 
 NS_IMPL_ISUPPORTS2(nsSupportsIDImpl, nsISupportsID, nsISupportsPrimitive)
@@ -98,7 +100,9 @@ NS_IMETHODIMP nsSupportsCStringImpl::ToString(char **_retval)
 
 NS_IMETHODIMP nsSupportsCStringImpl::SetData(const nsACString& aData)
 {
-    mData = aData;
+    bool ok = mData.Assign(aData, fallible_t());
+    if (!ok)
+        return NS_ERROR_OUT_OF_MEMORY;
     return NS_OK;
 }
 
@@ -135,7 +139,9 @@ NS_IMETHODIMP nsSupportsStringImpl::ToString(PRUnichar **_retval)
 
 NS_IMETHODIMP nsSupportsStringImpl::SetData(const nsAString& aData)
 {
-    mData = aData;
+    bool ok = mData.Assign(aData, fallible_t());
+    if (!ok)
+        return NS_ERROR_OUT_OF_MEMORY;
     return NS_OK;
 }
 
@@ -810,7 +816,8 @@ nsSupportsDependentCString::nsSupportsDependentCString(const char* aStr)
 NS_IMETHODIMP
 nsSupportsDependentCString::GetType(uint16_t *aType)
 {
-    NS_ENSURE_ARG_POINTER(aType);
+    if (NS_WARN_IF(!aType))
+        return NS_ERROR_INVALID_ARG;
 
     *aType = TYPE_CSTRING;
     return NS_OK;
@@ -826,7 +833,8 @@ nsSupportsDependentCString::GetData(nsACString& aData)
 NS_IMETHODIMP
 nsSupportsDependentCString::ToString(char **_retval)
 {
-    NS_ENSURE_ARG_POINTER(_retval);
+    if (NS_WARN_IF(!_retval))
+        return NS_ERROR_INVALID_ARG;
 
     *_retval = ToNewCString(mData);
     if (!*_retval)

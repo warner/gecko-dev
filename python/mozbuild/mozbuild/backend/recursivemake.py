@@ -34,6 +34,7 @@ from ..frontend.data import (
     InstallationTarget,
     IPDLFile,
     JavaJarData,
+    LibraryDefinition,
     LocalInclude,
     PreprocessedTestWebIDLFile,
     PreprocessedWebIDLFile,
@@ -352,18 +353,31 @@ class RecursiveMakeBackend(CommonBackend):
                 UNIFIED_CMMSRCS='mm',
                 UNIFIED_CPPSRCS='cpp',
             )
+
+            files_per_unification = 16
+            if 'FILES_PER_UNIFIED_FILE' in obj.variables.keys():
+                files_per_unification = obj.variables['FILES_PER_UNIFIED_FILE']
+
+            do_unify = not self.environment.substs.get(
+                'MOZ_DISABLE_UNIFIED_COMPILATION') and files_per_unification > 1
+
             # Sorted so output is consistent and we don't bump mtimes.
             for k, v in sorted(obj.variables.items()):
-                if k in unified_suffixes.keys():
-                    self._add_unified_build_rules(backend_file, v,
-                                      backend_file.objdir,
-                                      unified_prefix='Unified_%s_%s' %
-                                      (unified_suffixes[k],
-                                      backend_file.relobjdir.replace('/', '_')),
-                                      unified_suffix=unified_suffixes[k],
-                                      unified_files_makefile_variable=k,
-                                      include_curdir_build_rules=False)
-                    backend_file.write('%s += $(%s)\n' % (k[len('UNIFIED_'):], k))
+                if k in unified_suffixes:
+                    if do_unify:
+                        self._add_unified_build_rules(backend_file, v,
+                            backend_file.objdir,
+                            unified_prefix='Unified_%s_%s' % (
+                                unified_suffixes[k],
+                                backend_file.relobjdir.replace('/', '_')),
+                            unified_suffix=unified_suffixes[k],
+                            unified_files_makefile_variable=k,
+                            include_curdir_build_rules=False,
+                            files_per_unified_file=files_per_unification)
+                        backend_file.write('%s += $(%s)\n' % (k[len('UNIFIED_'):], k))
+                    else:
+                        backend_file.write('%s += %s\n' % (
+                            k[len('UNIFIED_'):], ' '.join(sorted(v))))
                 elif isinstance(v, list):
                     for item in v:
                         backend_file.write('%s += %s\n' % (k, item))
@@ -448,6 +462,9 @@ class RecursiveMakeBackend(CommonBackend):
                 self._process_java_jar_data(obj.wrapped, backend_file)
             else:
                 return
+
+        elif isinstance(obj, LibraryDefinition):
+            self._process_library_definition(obj, backend_file)
 
         else:
             return
@@ -581,8 +598,8 @@ class RecursiveMakeBackend(CommonBackend):
                                  extra_dependencies=[],
                                  unified_files_makefile_variable='unified_files',
                                  include_curdir_build_rules=True,
-                                 poison_windows_h=False):
-        files_per_unified_file = 16
+                                 poison_windows_h=False,
+                                 files_per_unified_file=16):
 
         explanation = "\n" \
             "# We build files in 'unified' mode by including several files\n" \
@@ -627,6 +644,7 @@ class RecursiveMakeBackend(CommonBackend):
             # handle source files being added/removed/renamed.  Therefore, we
             # generate them here also to make sure everything's up-to-date.
             with self._write_file(os.path.join(output_directory, unified_file)) as f:
+                f.write('#define MOZ_UNIFIED_BUILD\n')
                 includeTemplate = '#include "%(cppfile)s"'
                 if poison_windows_h:
                     includeTemplate += (
@@ -634,6 +652,18 @@ class RecursiveMakeBackend(CommonBackend):
                         '#ifdef _WINDOWS_\n'
                         '#error "%(cppfile)s included windows.h"\n'
                         "#endif")
+                includeTemplate += (
+                    '\n'
+                    '#ifdef PL_ARENA_CONST_ALIGN_MASK\n'
+                    '#error "%(cppfile)s uses PL_ARENA_CONST_ALIGN_MASK, '
+                    'so it cannot be built in unified mode."\n'
+                    '#undef PL_ARENA_CONST_ALIGN_MASK\n'
+                    '#endif\n'
+                    '#ifdef FORCE_PR_LOG\n'
+                    '#error "%(cppfile)s forces NSPR logging, '
+                    'so it cannot be built in unified mode."\n'
+                    '#undef FORCE_PR_LOG\n'
+                    '#endif')
                 f.write('\n'.join(includeTemplate % { "cppfile": s } for
                                   s in source_filenames))
 
@@ -1021,6 +1051,14 @@ class RecursiveMakeBackend(CommonBackend):
                 if not obj.dupe_manifest:
                     raise
 
+        for base, pattern, dest in obj.pattern_installs:
+            try:
+                self._install_manifests['tests'].add_pattern_symlink(base,
+                    pattern, dest)
+            except ValueError:
+                if not obj.dupe_manifest:
+                    raise
+
         for dest in obj.external_installs:
             try:
                 self._install_manifests['tests'].add_optional_exists(dest)
@@ -1062,6 +1100,20 @@ class RecursiveMakeBackend(CommonBackend):
         if jar.javac_flags:
             backend_file.write('%s_JAVAC_FLAGS := %s\n' %
                 (target, ' '.join(jar.javac_flags)))
+
+    def _process_library_definition(self, libdef, backend_file):
+        backend_file.write('LIBRARY_NAME = %s\n' % libdef.basename)
+        thisobjdir = libdef.objdir
+        topobjdir = libdef.topobjdir.replace(os.sep, '/')
+        for objdir, basename in libdef.static_libraries:
+            # If this is an external objdir (i.e., comm-central), use the other
+            # directory instead of $(DEPTH).
+            if objdir.startswith(topobjdir + '/'):
+                relpath = '$(DEPTH)/%s' % mozpath.relpath(objdir, topobjdir)
+            else:
+                relpath = mozpath.relpath(objdir, thisobjdir)
+            backend_file.write('SHARED_LIBRARY_LIBS += %s/$(LIB_PREFIX)%s.$(LIB_SUFFIX)\n'
+                               % (relpath, basename))
 
     def _write_manifests(self, dest, manifests):
         man_dir = os.path.join(self.environment.topobjdir, '_build_manifests',

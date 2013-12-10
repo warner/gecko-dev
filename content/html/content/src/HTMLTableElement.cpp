@@ -3,8 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/Util.h"
-
 #include "mozilla/dom/HTMLTableElement.h"
 #include "nsAttrValueInlines.h"
 #include "nsRuleData.h"
@@ -701,9 +699,9 @@ HTMLTableElement::ParseAttribute(int32_t aNamespaceID,
 
 
 
-static void
-MapAttributesIntoRule(const nsMappedAttributes* aAttributes,
-                      nsRuleData* aData)
+void
+HTMLTableElement::MapAttributesIntoRule(const nsMappedAttributes* aAttributes,
+                                        nsRuleData* aData)
 {
   // XXX Bug 211636:  This function is used by a single style rule
   // that's used to match two different type of elements -- tables, and

@@ -46,7 +46,7 @@ CodeGeneratorShared::CodeGeneratorShared(MIRGenerator *gen, LIRGraph *graph, Mac
     pushedArgs_(0),
 #endif
     lastOsiPointOffset_(0),
-    sps_(&GetIonContext()->runtime->spsProfiler, &lastPC_),
+    sps_(&GetIonContext()->runtime->spsProfiler(), &lastPC_),
     osrEntryOffset_(0),
     skipArgCheckEntryOffset_(0),
     frameDepth_(graph->localSlotCount() * sizeof(STACK_SLOT_SIZE) +
@@ -115,6 +115,7 @@ CodeGeneratorShared::addOutOfLineCode(OutOfLineCode *code)
         code->setSource(oolIns->script(), oolIns->pc());
     else
         code->setSource(current ? current->mir()->info().script() : nullptr, lastPC_);
+    JS_ASSERT_IF(code->script(), code->script()->containsPC(code->pc()));
     return outOfLineCode_.append(code);
 }
 
@@ -571,9 +572,24 @@ CodeGeneratorShared::verifyOsiPointRegs(LSafepoint *safepoint)
 
     masm.jump(&done);
 
+    // Do not profile the callWithABI that occurs below.  This is to avoid a
+    // rare corner case that occurs when profiling interacts with itself:
+    //
+    // When slow profiling assertions are turned on, FunctionBoundary ops
+    // (which update the profiler pseudo-stack) may emit a callVM, which
+    // forces them to have an osi point associated with them.  The
+    // FunctionBoundary for inline function entry is added to the caller's
+    // graph with a PC from the caller's code, but during codegen it modifies
+    // SPS instrumentation to add the callee as the current top-most script.
+    // When codegen gets to the OSIPoint, and the callWithABI below is
+    // emitted, the codegen thinks that the current frame is the callee, but
+    // the PC it's using from the OSIPoint refers to the caller.  This causes
+    // the profiler instrumentation of the callWithABI below to ASSERT, since
+    // the script and pc are mismatched.  To avoid this, we simply omit
+    // instrumentation for these callWithABIs.
     masm.bind(&failure);
     masm.setupUnalignedABICall(0, scratch);
-    masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, OsiPointRegisterCheckFailed));
+    masm.callWithABINoProfiling(JS_FUNC_TO_DATA_PTR(void *, OsiPointRegisterCheckFailed));
     masm.breakpoint();
 
     masm.bind(&done);
@@ -623,7 +639,7 @@ CodeGeneratorShared::callVM(const VMFunction &fun, LInstruction *ins, const Regi
 
     // If we're calling a function with an out parameter type of double, make
     // sure we have an FPU.
-    JS_ASSERT_IF(fun.outParam == Type_Double, GetIonContext()->runtime->jitSupportsFloatingPoint);
+    JS_ASSERT_IF(fun.outParam == Type_Double, GetIonContext()->runtime->jitSupportsFloatingPoint());
 
 #ifdef DEBUG
     if (ins->mirRaw()) {
@@ -704,7 +720,7 @@ class OutOfLineTruncateSlow : public OutOfLineCodeBase<CodeGeneratorShared>
 OutOfLineCode *
 CodeGeneratorShared::oolTruncateDouble(const FloatRegister &src, const Register &dest)
 {
-    OutOfLineTruncateSlow *ool = new OutOfLineTruncateSlow(src, dest);
+    OutOfLineTruncateSlow *ool = new(alloc()) OutOfLineTruncateSlow(src, dest);
     if (!addOutOfLineCode(ool))
         return nullptr;
     return ool;
@@ -725,7 +741,7 @@ CodeGeneratorShared::emitTruncateDouble(const FloatRegister &src, const Register
 bool
 CodeGeneratorShared::emitTruncateFloat32(const FloatRegister &src, const Register &dest)
 {
-    OutOfLineTruncateSlow *ool = new OutOfLineTruncateSlow(src, dest, true);
+    OutOfLineTruncateSlow *ool = new(alloc()) OutOfLineTruncateSlow(src, dest, true);
     if (!addOutOfLineCode(ool))
         return false;
 
@@ -803,7 +819,7 @@ OutOfLineAbortPar *
 CodeGeneratorShared::oolAbortPar(ParallelBailoutCause cause, MBasicBlock *basicBlock,
                                  jsbytecode *bytecode)
 {
-    OutOfLineAbortPar *ool = new OutOfLineAbortPar(cause, basicBlock, bytecode);
+    OutOfLineAbortPar *ool = new(alloc()) OutOfLineAbortPar(cause, basicBlock, bytecode);
     if (!ool || !addOutOfLineCode(ool))
         return nullptr;
     return ool;
@@ -827,7 +843,7 @@ CodeGeneratorShared::oolAbortPar(ParallelBailoutCause cause, LInstruction *lir)
 OutOfLinePropagateAbortPar *
 CodeGeneratorShared::oolPropagateAbortPar(LInstruction *lir)
 {
-    OutOfLinePropagateAbortPar *ool = new OutOfLinePropagateAbortPar(lir);
+    OutOfLinePropagateAbortPar *ool = new(alloc()) OutOfLinePropagateAbortPar(lir);
     if (!ool || !addOutOfLineCode(ool))
         return nullptr;
     return ool;
@@ -959,8 +975,7 @@ CodeGeneratorShared::jumpToBlock(MBasicBlock *mir)
         CodeOffsetJump backedge = masm.jumpWithPatch(&rejoin);
         masm.bind(&rejoin);
 
-        if (!patchableBackedges_.append(PatchableBackedgeInfo(backedge, mir->lir()->label(), oolEntry)))
-            MOZ_CRASH();
+        masm.propagateOOM(patchableBackedges_.append(PatchableBackedgeInfo(backedge, mir->lir()->label(), oolEntry)));
     } else {
         masm.jump(mir->lir()->label());
     }
@@ -976,8 +991,7 @@ CodeGeneratorShared::jumpToBlock(MBasicBlock *mir, Assembler::Condition cond)
         CodeOffsetJump backedge = masm.jumpWithPatch(&rejoin, cond);
         masm.bind(&rejoin);
 
-        if (!patchableBackedges_.append(PatchableBackedgeInfo(backedge, mir->lir()->label(), oolEntry)))
-            MOZ_CRASH();
+        masm.propagateOOM(patchableBackedges_.append(PatchableBackedgeInfo(backedge, mir->lir()->label(), oolEntry)));
     } else {
         masm.j(cond, mir->lir()->label());
     }

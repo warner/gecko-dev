@@ -9,6 +9,7 @@
 #ifndef jsapi_h
 #define jsapi_h
 
+#include "mozilla/Atomics.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/RangedPtr.h"
@@ -51,7 +52,7 @@ class StableCharPtr : public CharPtr {
     {}
 };
 
-#if defined JS_THREADSAFE && defined DEBUG
+#if defined JS_THREADSAFE && defined JS_DEBUG
 
 class JS_PUBLIC_API(AutoCheckRequestDepth)
 {
@@ -70,9 +71,9 @@ class JS_PUBLIC_API(AutoCheckRequestDepth)
 # define CHECK_REQUEST(cx) \
     ((void) 0)
 
-#endif /* JS_THREADSAFE && DEBUG */
+#endif /* JS_THREADSAFE && JS_DEBUG */
 
-#ifdef DEBUG
+#ifdef JS_DEBUG
 /*
  * Assert that we're not doing GC on cx, that we're in a request as
  * needed, and that the compartments for cx and v are correct.
@@ -84,7 +85,7 @@ AssertArgumentsAreSane(JSContext *cx, JS::Handle<JS::Value> v);
 inline void AssertArgumentsAreSane(JSContext *cx, JS::Handle<JS::Value> v) {
     /* Do nothing */
 }
-#endif /* DEBUG */
+#endif /* JS_DEBUG */
 
 class JS_PUBLIC_API(AutoGCRooter) {
   public:
@@ -1369,7 +1370,7 @@ class JSAutoCheckRequest
     JSAutoCheckRequest(JSContext *cx
                        MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
     {
-#if defined JS_THREADSAFE && defined DEBUG
+#if defined JS_THREADSAFE && defined JS_DEBUG
         mContext = cx;
         JS_ASSERT(JS_IsInRequest(JS_GetRuntime(cx)));
 #endif
@@ -1377,14 +1378,14 @@ class JSAutoCheckRequest
     }
 
     ~JSAutoCheckRequest() {
-#if defined JS_THREADSAFE && defined DEBUG
+#if defined JS_THREADSAFE && defined JS_DEBUG
         JS_ASSERT(JS_IsInRequest(JS_GetRuntime(mContext)));
 #endif
     }
 
 
   private:
-#if defined JS_THREADSAFE && defined DEBUG
+#if defined JS_THREADSAFE && defined JS_DEBUG
     JSContext *mContext;
 #endif
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
@@ -1447,7 +1448,6 @@ class JS_PUBLIC_API(ContextOptions) {
         werror_(false),
         varObjFix_(false),
         privateIsNSISupports_(false),
-        compileAndGo_(false),
         dontReportUncaught_(false),
         noDefaultCompartmentObject_(false),
         noScriptRval_(false),
@@ -1496,16 +1496,6 @@ class JS_PUBLIC_API(ContextOptions) {
     }
     ContextOptions &togglePrivateIsNSISupports() {
         privateIsNSISupports_ = !privateIsNSISupports_;
-        return *this;
-    }
-
-    bool compileAndGo() const { return compileAndGo_; }
-    ContextOptions &setCompileAndGo(bool flag) {
-        compileAndGo_ = flag;
-        return *this;
-    }
-    ContextOptions &toggleCompileAndGo() {
-        compileAndGo_ = !compileAndGo_;
         return *this;
     }
 
@@ -1594,7 +1584,6 @@ class JS_PUBLIC_API(ContextOptions) {
     bool werror_ : 1;
     bool varObjFix_ : 1;
     bool privateIsNSISupports_ : 1;
-    bool compileAndGo_ : 1;
     bool dontReportUncaught_ : 1;
     bool noDefaultCompartmentObject_ : 1;
     bool noScriptRval_ : 1;
@@ -1781,6 +1770,9 @@ JS_GetClassPrototype(JSContext *cx, JSProtoKey key, JSObject **objp);
 extern JS_PUBLIC_API(JSProtoKey)
 JS_IdentifyClassPrototype(JSContext *cx, JSObject *obj);
 
+extern JS_PUBLIC_API(JSProtoKey)
+JS_IdToProtoKey(JSContext *cx, JS::HandleId id);
+
 /*
  * Returns the original value of |Function.prototype| from the global object in
  * which |forObj| was created.
@@ -1956,14 +1948,6 @@ JS_AddStringRoot(JSContext *cx, JSString **rp);
 extern JS_PUBLIC_API(bool)
 JS_AddObjectRoot(JSContext *cx, JSObject **rp);
 
-#ifdef NAME_ALL_GC_ROOTS
-#define JS_DEFINE_TO_TOKEN(def) #def
-#define JS_DEFINE_TO_STRING(def) JS_DEFINE_TO_TOKEN(def)
-#define JS_AddValueRoot(cx,vp) JS_AddNamedValueRoot((cx), (vp), (__FILE__ ":" JS_TOKEN_TO_STRING(__LINE__))
-#define JS_AddStringRoot(cx,rp) JS_AddNamedStringRoot((cx), (rp), (__FILE__ ":" JS_TOKEN_TO_STRING(__LINE__))
-#define JS_AddObjectRoot(cx,rp) JS_AddNamedObjectRoot((cx), (rp), (__FILE__ ":" JS_TOKEN_TO_STRING(__LINE__))
-#endif
-
 extern JS_PUBLIC_API(bool)
 JS_AddNamedValueRoot(JSContext *cx, jsval *vp, const char *name);
 
@@ -2002,13 +1986,6 @@ JS_RemoveObjectRootRT(JSRuntime *rt, JSObject **rp);
 
 extern JS_PUBLIC_API(void)
 JS_RemoveScriptRootRT(JSRuntime *rt, JSScript **rp);
-
-/*
- * C-compatible version of the Anchor class. It should be called after the last
- * use of the variable it protects.
- */
-extern JS_NEVER_INLINE JS_PUBLIC_API(void)
-JS_AnchorPtr(void *p);
 
 /*
  * Register externally maintained GC roots.
@@ -2056,10 +2033,10 @@ JSVAL_TRACE_KIND(jsval v)
     return (JSGCTraceKind) JSVAL_TRACE_KIND_IMPL(JSVAL_TO_IMPL(v));
 }
 
-#ifdef DEBUG
+#ifdef JS_DEBUG
 
 /*
- * DEBUG-only method to dump the object graph of heap-allocated things.
+ * Debug-only method to dump the object graph of heap-allocated things.
  *
  * fp:              file for the dump output.
  * start:           when non-null, dump only things reachable from start
@@ -2098,7 +2075,7 @@ extern JS_PUBLIC_API(bool)
 JS_IsGCMarkingTracer(JSTracer *trc);
 
 /* For assertions only. */
-#ifdef DEBUG
+#ifdef JS_DEBUG
 extern JS_PUBLIC_API(bool)
 JS_IsMarkingGray(JSTracer *trc);
 #endif
@@ -2418,6 +2395,8 @@ struct JSPropertySpec {
     uint8_t                     flags;
     JSPropertyOpWrapper         getter;
     JSStrictPropertyOpWrapper   setter;
+    const char                 *selfHostedGetter;
+    const char                 *selfHostedSetter;
 };
 
 namespace JS {
@@ -2448,13 +2427,23 @@ inline int CheckIsNative(JSNative native);
     {name, 0, \
      uint8_t(JS_CHECK_ACCESSOR_FLAGS(flags) | JSPROP_SHARED | JSPROP_NATIVE_ACCESSORS), \
      JSOP_WRAPPER(JS_CAST_NATIVE_TO(getter, JSPropertyOp)), \
-     JSOP_NULLWRAPPER}
+     JSOP_NULLWRAPPER, nullptr, nullptr}
 #define JS_PSGS(name, getter, setter, flags) \
     {name, 0, \
      uint8_t(JS_CHECK_ACCESSOR_FLAGS(flags) | JSPROP_SHARED | JSPROP_NATIVE_ACCESSORS), \
      JSOP_WRAPPER(JS_CAST_NATIVE_TO(getter, JSPropertyOp)), \
-     JSOP_WRAPPER(JS_CAST_NATIVE_TO(setter, JSStrictPropertyOp))}
-#define JS_PS_END {0, 0, 0, JSOP_NULLWRAPPER, JSOP_NULLWRAPPER}
+     JSOP_WRAPPER(JS_CAST_NATIVE_TO(setter, JSStrictPropertyOp)), \
+     nullptr, nullptr}
+#define JS_SELF_HOSTED_GET(name, getterName, flags) \
+    {name, 0, \
+     uint8_t(JS_CHECK_ACCESSOR_FLAGS(flags) | JSPROP_SHARED | JSPROP_GETTER), \
+     JSOP_NULLWRAPPER, JSOP_NULLWRAPPER, getterName, nullptr}
+#define JS_SELF_HOSTED_GETSET(name, getterName, setterName, flags) \
+    {name, 0, \
+     uint8_t(JS_CHECK_ACCESSOR_FLAGS(flags) | JSPROP_SHARED | JSPROP_GETTER | JSPROP_SETTER), \
+     JSOP_NULLWRAPPER, JSOP_NULLWRAPPER, getterName, setterName}
+#define JS_PS_END {0, 0, 0, JSOP_NULLWRAPPER, JSOP_NULLWRAPPER, \
+                   nullptr, nullptr}
 
 /*
  * To define a native function, set call to a JSNativeWrapper. To define a
@@ -3051,15 +3040,6 @@ extern JS_PUBLIC_API(bool)
 JS_ForwardGetElementTo(JSContext *cx, JSObject *obj, uint32_t index, JSObject *onBehalfOf,
                        JS::MutableHandle<JS::Value> vp);
 
-/*
- * Get the property with name given by |index|, if it has one.  If
- * not, |*present| will be set to false and the value of |vp| must not
- * be relied on.
- */
-extern JS_PUBLIC_API(bool)
-JS_GetElementIfPresent(JSContext *cx, JSObject *obj, uint32_t index, JSObject *onBehalfOf,
-                       JS::MutableHandle<JS::Value> vp, bool* present);
-
 extern JS_PUBLIC_API(bool)
 JS_SetElement(JSContext *cx, JSObject *obj, uint32_t index, JS::MutableHandle<JS::Value> vp);
 
@@ -3160,15 +3140,19 @@ JS_SetReservedSlot(JSObject *obj, uint32_t index, jsval v);
  */
 struct JSPrincipals {
     /* Don't call "destroy"; use reference counting macros below. */
-    int refcount;
+#ifdef JS_THREADSAFE
+    mozilla::Atomic<int32_t> refcount;
+#else
+    int32_t refcount;
+#endif
 
-#ifdef DEBUG
+#ifdef JS_DEBUG
     /* A helper to facilitate principals debugging. */
     uint32_t    debugToken;
 #endif
 
     void setDebugToken(uint32_t token) {
-# ifdef DEBUG
+# ifdef JS_DEBUG
         debugToken = token;
 # endif
     }
@@ -3333,48 +3317,29 @@ extern JS_PUBLIC_API(bool)
 JS_BufferIsCompilableUnit(JSContext *cx, JSObject *obj, const char *utf8, size_t length);
 
 extern JS_PUBLIC_API(JSScript *)
-JS_CompileScript(JSContext *cx, JSObject *obj,
+JS_CompileScript(JSContext *cx, JS::HandleObject obj,
                  const char *ascii, size_t length,
-                 const char *filename, unsigned lineno);
+                 const JS::CompileOptions &options);
 
 extern JS_PUBLIC_API(JSScript *)
-JS_CompileScriptForPrincipals(JSContext *cx, JSObject *obj,
-                              JSPrincipals *principals,
-                              const char *ascii, size_t length,
-                              const char *filename, unsigned lineno);
-
-extern JS_PUBLIC_API(JSScript *)
-JS_CompileUCScript(JSContext *cx, JSObject *obj,
+JS_CompileUCScript(JSContext *cx, JS::HandleObject obj,
                    const jschar *chars, size_t length,
-                   const char *filename, unsigned lineno);
-
-extern JS_PUBLIC_API(JSScript *)
-JS_CompileUCScriptForPrincipals(JSContext *cx, JSObject *obj,
-                                JSPrincipals *principals,
-                                const jschar *chars, size_t length,
-                                const char *filename, unsigned lineno);
+                   const JS::CompileOptions &options);
 
 extern JS_PUBLIC_API(JSObject *)
 JS_GetGlobalFromScript(JSScript *script);
 
 extern JS_PUBLIC_API(JSFunction *)
-JS_CompileFunction(JSContext *cx, JSObject *obj, const char *name,
+JS_CompileFunction(JSContext *cx, JS::HandleObject obj, const char *name,
                    unsigned nargs, const char *const *argnames,
                    const char *bytes, size_t length,
-                   const char *filename, unsigned lineno);
+                   const JS::CompileOptions &options);
 
 extern JS_PUBLIC_API(JSFunction *)
-JS_CompileFunctionForPrincipals(JSContext *cx, JSObject *obj,
-                                JSPrincipals *principals, const char *name,
-                                unsigned nargs, const char *const *argnames,
-                                const char *bytes, size_t length,
-                                const char *filename, unsigned lineno);
-
-extern JS_PUBLIC_API(JSFunction *)
-JS_CompileUCFunction(JSContext *cx, JSObject *obj, const char *name,
+JS_CompileUCFunction(JSContext *cx, JS::HandleObject obj, const char *name,
                      unsigned nargs, const char *const *argnames,
                      const jschar *chars, size_t length,
-                     const char *filename, unsigned lineno);
+                     const JS::CompileOptions &options);
 
 namespace JS {
 
@@ -3468,6 +3433,7 @@ class JS_PUBLIC_API(ReadOnlyCompileOptions)
     const char *filename() const { return filename_; }
     const jschar *sourceMapURL() const { return sourceMapURL_; }
     virtual JSObject *element() const = 0;
+    virtual JSString *elementProperty() const = 0;
 
     // POD options.
     JSVersion version;
@@ -3512,6 +3478,7 @@ class JS_PUBLIC_API(OwningCompileOptions) : public ReadOnlyCompileOptions
 {
     JSRuntime *runtime;
     PersistentRootedObject elementRoot;
+    PersistentRootedString elementPropertyRoot;
 
   public:
     // A minimal constructor, for use with OwningCompileOptions::copy. This
@@ -3522,6 +3489,7 @@ class JS_PUBLIC_API(OwningCompileOptions) : public ReadOnlyCompileOptions
     ~OwningCompileOptions();
 
     JSObject *element() const MOZ_OVERRIDE { return elementRoot; }
+    JSString *elementProperty() const MOZ_OVERRIDE { return elementPropertyRoot; }
 
     // Set this to a copy of |rhs|. Return false on OOM.
     bool copy(JSContext *cx, const ReadOnlyCompileOptions &rhs);
@@ -3531,7 +3499,8 @@ class JS_PUBLIC_API(OwningCompileOptions) : public ReadOnlyCompileOptions
     bool setSourceMapURL(JSContext *cx, const jschar *s);
 
     /* These setters are infallible, and can be chained. */
-    OwningCompileOptions &setElement(JSObject *e) { elementRoot = e; return *this; }
+    OwningCompileOptions &setElement(JSObject *e)         { elementRoot = e;         return *this; }
+    OwningCompileOptions &setElementProperty(JSString *p) { elementPropertyRoot = p; return *this; }
     OwningCompileOptions &setPrincipals(JSPrincipals *p) {
         if (p) JS_HoldPrincipals(p);
         if (principals_) JS_DropPrincipals(runtime, principals_);
@@ -3569,11 +3538,12 @@ class JS_PUBLIC_API(OwningCompileOptions) : public ReadOnlyCompileOptions
 class MOZ_STACK_CLASS JS_PUBLIC_API(CompileOptions) : public ReadOnlyCompileOptions
 {
     RootedObject elementRoot;
+    RootedString elementPropertyRoot;
 
   public:
     explicit CompileOptions(JSContext *cx, JSVersion version = JSVERSION_UNKNOWN);
     CompileOptions(js::ContextFriendFields *cx, const ReadOnlyCompileOptions &rhs)
-      : ReadOnlyCompileOptions(), elementRoot(cx)
+      : ReadOnlyCompileOptions(), elementRoot(cx), elementPropertyRoot(cx)
     {
         copyPODOptions(rhs);
 
@@ -3582,17 +3552,19 @@ class MOZ_STACK_CLASS JS_PUBLIC_API(CompileOptions) : public ReadOnlyCompileOpti
         filename_ = rhs.filename();
         sourceMapURL_ = rhs.sourceMapURL();
         elementRoot = rhs.element();
+        elementPropertyRoot = rhs.elementProperty();
     }
 
     JSObject *element() const MOZ_OVERRIDE { return elementRoot; }
+    JSString *elementProperty() const MOZ_OVERRIDE { return elementPropertyRoot; }
 
     CompileOptions &setFileAndLine(const char *f, unsigned l) {
         filename_ = f; lineno = l; return *this;
     }
-    CompileOptions &setSourceMapURL(const jschar *s) { sourceMapURL_ = s; return *this; }
-    CompileOptions &setElement(JSObject *e) { elementRoot = e; return *this; }
-
-    CompileOptions &setPrincipals(JSPrincipals *p) { principals_ = p; return *this; }
+    CompileOptions &setSourceMapURL(const jschar *s) { sourceMapURL_ = s;       return *this; }
+    CompileOptions &setElement(JSObject *e)          { elementRoot = e;         return *this; }
+    CompileOptions &setElementProperty(JSString *p)  { elementPropertyRoot = p; return *this; }
+    CompileOptions &setPrincipals(JSPrincipals *p)   { principals_ = p;         return *this; }
     CompileOptions &setOriginPrincipals(JSPrincipals *p) {
         originPrincipals_ = p;
         return *this;
@@ -4622,30 +4594,32 @@ namespace JS {
 
 /*
  * This callback represents a request by the JS engine to open for reading the
- * existing cache entry for the given global. If a cache entry exists, the
- * callback shall return 'true' and return the size, base address and an opaque
- * file handle as outparams. If the callback returns 'true', the JS engine
- * guarantees a call to CloseAsmJSCacheEntryForReadOp, passing the same base
- * address, size and handle.
+ * existing cache entry for the given global and char range that may contain a
+ * module. If a cache entry exists, the callback shall return 'true' and return
+ * the size, base address and an opaque file handle as outparams. If the
+ * callback returns 'true', the JS engine guarantees a call to
+ * CloseAsmJSCacheEntryForReadOp, passing the same base address, size and
+ * handle.
  */
 typedef bool
-(* OpenAsmJSCacheEntryForReadOp)(HandleObject global, size_t *size, const uint8_t **memory,
-                                 intptr_t *handle);
+(* OpenAsmJSCacheEntryForReadOp)(HandleObject global, const jschar *begin, const jschar *limit,
+                                 size_t *size, const uint8_t **memory, intptr_t *handle);
 typedef void
 (* CloseAsmJSCacheEntryForReadOp)(HandleObject global, size_t size, const uint8_t *memory,
                                   intptr_t handle);
 
 /*
  * This callback represents a request by the JS engine to open for writing a
- * cache entry of the given size for the given global. If cache entry space is
- * available, the callback shall return 'true' and return the base address and
- * an opaque file handle as outparams. If the callback returns 'true', the JS
- * engine guarantees a call to CloseAsmJSCacheEntryForWriteOp passing the same
- * base address, size and handle.
+ * cache entry of the given size for the given global and char range containing
+ * the just-compiled module. If cache entry space is available, the callback
+ * shall return 'true' and return the base address and an opaque file handle as
+ * outparams. If the callback returns 'true', the JS engine guarantees a call
+ * to CloseAsmJSCacheEntryForWriteOp passing the same base address, size and
+ * handle.
  */
 typedef bool
-(* OpenAsmJSCacheEntryForWriteOp)(HandleObject global, size_t size, uint8_t **memory,
-                                  intptr_t *handle);
+(* OpenAsmJSCacheEntryForWriteOp)(HandleObject global, const jschar *begin, const jschar *end,
+                                  size_t size, uint8_t **memory, intptr_t *handle);
 typedef void
 (* CloseAsmJSCacheEntryForWriteOp)(HandleObject global, size_t size, uint8_t *memory,
                                    intptr_t handle);

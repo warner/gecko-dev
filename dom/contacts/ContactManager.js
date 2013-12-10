@@ -400,7 +400,7 @@ ContactManager.prototype = {
   },
 
   _convertContacts: function(aContacts) {
-    let contacts = [];
+    let contacts = new this._window.Array();
     for (let i in aContacts) {
       contacts.push(this._convertContact(aContacts[i]));
     }
@@ -811,6 +811,7 @@ ContactManager.prototype = {
   classID: Components.ID("{8beb3a66-d70a-4111-b216-b8e995ad3aff}"),
   contractID: "@mozilla.org/contactManager;1",
   QueryInterface: XPCOMUtils.generateQI([Ci.nsISupportsWeakReference,
+                                         Ci.nsIObserver,
                                          Ci.nsIDOMGlobalPropertyInitializer]),
 };
 

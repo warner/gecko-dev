@@ -9,7 +9,6 @@
 
 #include "mozilla/Atomics.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Util.h"
 
 #include "jscntxt.h"
 #include "jsgc.h"
@@ -128,12 +127,12 @@ struct Zone : public JS::shadow::Zone,
 
     void setNeedsBarrier(bool needs, ShouldUpdateIon updateIon);
 
-    const bool *AddressOfNeedsBarrier() const {
+    const bool *addressOfNeedsBarrier() const {
         return &needsBarrier_;
     }
 
   public:
-    enum CompartmentGCState {
+    enum GCState {
         NoGC,
         Mark,
         MarkGray,
@@ -143,7 +142,7 @@ struct Zone : public JS::shadow::Zone,
 
   private:
     bool                         gcScheduled;
-    CompartmentGCState           gcState;
+    GCState                      gcState;
     bool                         gcPreserveCode;
 
   public:
@@ -166,7 +165,7 @@ struct Zone : public JS::shadow::Zone,
         return runtimeFromMainThread()->isHeapMajorCollecting() && gcState != NoGC;
     }
 
-    void setGCState(CompartmentGCState state) {
+    void setGCState(GCState state) {
         JS_ASSERT(runtimeFromMainThread()->isHeapBusy());
         JS_ASSERT_IF(state != NoGC, canCollect());
         gcState = state;

@@ -148,23 +148,16 @@ class TestEmitterBasic(unittest.TestCase):
             EXTRA_PP_JS_MODULES=['bar.pp.jsm', 'foo.pp.jsm'],
             FAIL_ON_WARNINGS=True,
             FORCE_SHARED_LIB=True,
-            FORCE_STATIC_LIB=True,
-            GTEST_CSRCS=['test1.c', 'test2.c'],
-            GTEST_CMMSRCS=['test1.mm', 'test2.mm'],
-            GTEST_CPPSRCS=['test1.cpp', 'test2.cpp'],
             HOST_CPPSRCS=['fans.cpp', 'tans.cpp'],
             HOST_CSRCS=['fans.c', 'tans.c'],
             HOST_LIBRARY_NAME='host_fans',
             IS_COMPONENT=True,
-            LIBRARY_NAME='lib_name',
             LIBS=['fans.lib', 'tans.lib'],
             LIBXUL_LIBRARY=True,
             MSVC_ENABLE_PGO=True,
             NO_DIST_INSTALL=True,
-            MODULE='module_name',
             OS_LIBS=['foo.so', '-l123', 'aaa.a'],
             SDK_LIBRARY=['fans.sdk', 'tans.sdk'],
-            SHARED_LIBRARY_LIBS=['fans.sll', 'tans.sll'],
             SSRCS=['bans.S', 'fans.S'],
             VISIBILITY_FLAGS='',
         )
@@ -255,10 +248,8 @@ class TestEmitterBasic(unittest.TestCase):
                 'installs': {
                     'a11y.ini',
                     'test_a11y.js',
-                    # From ** wildcard.
-                    'a11y-support/foo',
-                    'a11y-support/dir1/bar',
                 },
+                'pattern-installs': 1,
             },
             'browser.ini': {
                 'flavor': 'browser-chrome',
@@ -325,6 +316,9 @@ class TestEmitterBasic(unittest.TestCase):
                 path = path[len(o.directory)+1:]
 
                 self.assertIn(path, m['installs'])
+
+            if 'pattern-installs' in m:
+                self.assertEqual(len(o.pattern_installs), m['pattern-installs'])
 
     def test_test_manifest_unmatched_generated(self):
         reader = self.reader('test-manifest-unmatched-generated')

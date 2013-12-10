@@ -47,6 +47,7 @@ namespace layers {
 
 class APZCTreeManager;
 class AsyncCompositionManager;
+class Compositor;
 class LayerManagerComposite;
 class LayerTransactionParent;
 
@@ -88,6 +89,10 @@ public:
                                 SurfaceDescriptor* aOutSnapshot);
   virtual bool RecvFlushRendering() MOZ_OVERRIDE;
 
+  virtual bool RecvNotifyRegionInvalidated(const nsIntRegion& aRegion) MOZ_OVERRIDE;
+  virtual bool RecvStartFrameTimeRecording(const int32_t& aBufferSize, uint32_t* aOutStartIndex) MOZ_OVERRIDE;
+  virtual bool RecvStopFrameTimeRecording(const uint32_t& aStartIndex, InfallibleTArray<float>* intervals) MOZ_OVERRIDE;
+
   virtual void ActorDestroy(ActorDestroyReason why) MOZ_OVERRIDE;
 
   virtual void ShadowLayersUpdated(LayerTransactionParent* aLayerTree,
@@ -102,8 +107,6 @@ public:
    */
   void ForceIsFirstPaint();
   void Destroy();
-
-  LayerManagerComposite* GetLayerManager() { return mLayerManager; }
 
   void NotifyChildCreated(uint64_t aChild);
 
@@ -199,6 +202,7 @@ public:
     nsRefPtr<Layer> mRoot;
     nsRefPtr<GeckoContentController> mController;
     CompositorParent* mParent;
+    LayerManagerComposite* mLayerManager;
     TargetConfig mTargetConfig;
   };
 
@@ -208,6 +212,8 @@ public:
    * the compositor thread.
    */
   static const LayerTreeState* GetIndirectShadowTree(uint64_t aId);
+
+  float ComputeRenderIntegrity();
 
   /**
    * Tell all CompositorParents to update their last refresh to aTime and sample
@@ -230,7 +236,8 @@ protected:
                                  bool* aSuccess);
   virtual bool DeallocPLayerTransactionParent(PLayerTransactionParent* aLayers);
   virtual void ScheduleTask(CancelableTask*, int);
-  virtual void Composite();
+  void Composite();
+  void CompositeInTransaction();
   virtual void ComposeToTarget(gfx::DrawTarget* aTarget);
 
   void SetEGLSurfaceSize(int width, int height);
@@ -290,6 +297,7 @@ private:
   bool CanComposite();
 
   nsRefPtr<LayerManagerComposite> mLayerManager;
+  nsRefPtr<Compositor> mCompositor;
   RefPtr<AsyncCompositionManager> mCompositionManager;
   nsIWidget* mWidget;
   CancelableTask *mCurrentCompositeTask;

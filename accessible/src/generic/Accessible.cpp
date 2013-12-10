@@ -78,6 +78,7 @@
 #endif
 
 #include "mozilla/Assertions.h"
+#include "mozilla/FloatingPoint.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/unused.h"
 #include "mozilla/Preferences.h"
@@ -230,7 +231,7 @@ Accessible::Name(nsString& aName)
     // for processing, the user agent shall choose the first one.
     for (nsIContent* childElm = mContent->GetFirstChild(); childElm;
          childElm = childElm->GetNextSibling()) {
-      if (childElm->IsSVG(nsGkAtoms::title)) {
+      if (childElm->IsSVG(nsGkAtoms::desc)) {
         nsTextEquivUtils::AppendTextEquivFromContent(this, childElm, &aName);
         return eNameFromTooltip;
       }
@@ -293,7 +294,7 @@ Accessible::Description(nsString& aDescription)
       } else if (mContent->IsSVG()) {
         for (nsIContent* childElm = mContent->GetFirstChild(); childElm;
              childElm = childElm->GetNextSibling()) {
-          if (childElm->IsSVG(nsGkAtoms::title)) {
+          if (childElm->IsSVG(nsGkAtoms::desc)) {
             nsTextEquivUtils::AppendTextEquivFromContent(this, childElm,
                                                          &aDescription);
             break;
@@ -376,10 +377,8 @@ Accessible::AccessKey() const
   nsIDocument* document = mContent->GetCurrentDoc();
   if (!document)
     return KeyBinding();
-  nsCOMPtr<nsISupports> container = document->GetContainer();
-  if (!container)
-    return KeyBinding();
-  nsCOMPtr<nsIDocShellTreeItem> treeItem(do_QueryInterface(container));
+
+  nsCOMPtr<nsIDocShellTreeItem> treeItem(document->GetDocShell());
   if (!treeItem)
     return KeyBinding();
 
@@ -1053,56 +1052,37 @@ Accessible::TakeFocus()
   return NS_OK;
 }
 
-ENameValueFlag
-Accessible::GetHTMLName(nsString& aLabel)
+void
+Accessible::XULElmName(DocAccessible* aDocument,
+                       nsIContent* aElm, nsString& aName)
 {
-  Accessible* labelAcc = nullptr;
-  HTMLLabelIterator iter(Document(), this);
-  while ((labelAcc = iter.Next())) {
-    nsTextEquivUtils::AppendTextEquivFromContent(this, labelAcc->GetContent(),
-                                                 &aLabel);
-    aLabel.CompressWhitespace();
-  }
+  /**
+   * 3 main cases for XUL Controls to be labeled
+   *   1 - control contains label="foo"
+   *   2 - control has, as a child, a label element
+   *        - label has either value="foo" or children
+   *   3 - non-child label contains control="controlID"
+   *        - label has either value="foo" or children
+   * Once a label is found, the search is discontinued, so a control
+   *  that has a label child as well as having a label external to
+   *  the control that uses the control="controlID" syntax will use
+   *  the child label for its Name.
+   */
 
-  if (!aLabel.IsEmpty())
-    return eNameOK;
-
-  nsTextEquivUtils::GetNameFromSubtree(this, aLabel);
-  return aLabel.IsEmpty() ? eNameOK : eNameFromSubtree;
-}
-
-/**
-  * 3 main cases for XUL Controls to be labeled
-  *   1 - control contains label="foo"
-  *   2 - control has, as a child, a label element
-  *        - label has either value="foo" or children
-  *   3 - non-child label contains control="controlID"
-  *        - label has either value="foo" or children
-  * Once a label is found, the search is discontinued, so a control
-  *  that has a label child as well as having a label external to
-  *  the control that uses the control="controlID" syntax will use
-  *  the child label for its Name.
-  */
-ENameValueFlag
-Accessible::GetXULName(nsString& aName)
-{
   // CASE #1 (via label attribute) -- great majority of the cases
-  nsCOMPtr<nsIDOMXULLabeledControlElement> labeledEl =
-    do_QueryInterface(mContent);
+  nsCOMPtr<nsIDOMXULLabeledControlElement> labeledEl = do_QueryInterface(aElm);
   if (labeledEl) {
     labeledEl->GetLabel(aName);
   } else {
-    nsCOMPtr<nsIDOMXULSelectControlItemElement> itemEl =
-      do_QueryInterface(mContent);
+    nsCOMPtr<nsIDOMXULSelectControlItemElement> itemEl = do_QueryInterface(aElm);
     if (itemEl) {
       itemEl->GetLabel(aName);
     } else {
-      nsCOMPtr<nsIDOMXULSelectControlElement> select =
-        do_QueryInterface(mContent);
+      nsCOMPtr<nsIDOMXULSelectControlElement> select = do_QueryInterface(aElm);
       // Use label if this is not a select control element which 
       // uses label attribute to indicate which option is selected
       if (!select) {
-        nsCOMPtr<nsIDOMXULElement> xulEl(do_QueryInterface(mContent));
+        nsCOMPtr<nsIDOMXULElement> xulEl(do_QueryInterface(aElm));
         if (xulEl)
           xulEl->GetAttribute(NS_LITERAL_STRING("label"), aName);
       }
@@ -1112,7 +1092,7 @@ Accessible::GetXULName(nsString& aName)
   // CASES #2 and #3 ------ label as a child or <label control="id" ... > </label>
   if (aName.IsEmpty()) {
     Accessible* labelAcc = nullptr;
-    XULLabelIterator iter(Document(), mContent);
+    XULLabelIterator iter(aDocument, aElm);
     while ((labelAcc = iter.Next())) {
       nsCOMPtr<nsIDOMXULLabelElement> xulLabel =
         do_QueryInterface(labelAcc->GetContent());
@@ -1121,30 +1101,27 @@ Accessible::GetXULName(nsString& aName)
         // If no value attribute, a non-empty label must contain
         // children that define its text -- possibly using HTML
         nsTextEquivUtils::
-          AppendTextEquivFromContent(this, labelAcc->GetContent(), &aName);
+          AppendTextEquivFromContent(labelAcc, labelAcc->GetContent(), &aName);
       }
     }
   }
 
   aName.CompressWhitespace();
   if (!aName.IsEmpty())
-    return eNameOK;
+    return;
 
   // Can get text from title of <toolbaritem> if we're a child of a <toolbaritem>
-  nsIContent *bindingParent = mContent->GetBindingParent();
-  nsIContent *parent = bindingParent? bindingParent->GetParent() :
-                                      mContent->GetParent();
+  nsIContent *bindingParent = aElm->GetBindingParent();
+  nsIContent* parent =
+    bindingParent? bindingParent->GetParent() : aElm->GetParent();
   while (parent) {
     if (parent->Tag() == nsGkAtoms::toolbaritem &&
         parent->GetAttr(kNameSpaceID_None, nsGkAtoms::title, aName)) {
       aName.CompressWhitespace();
-      return eNameOK;
+      return;
     }
     parent = parent->GetParent();
   }
-
-  nsTextEquivUtils::GetNameFromSubtree(this, aName);
-  return aName.IsEmpty() ? eNameOK : eNameFromSubtree;
 }
 
 nsresult
@@ -1293,9 +1270,7 @@ Accessible::NativeAttributes()
                                            nsCoreUtils::GetRoleContent(doc));
 
     // Allow ARIA live region markup from outer documents to override
-    nsCOMPtr<nsISupports> container = doc->GetContainer(); 
-    nsCOMPtr<nsIDocShellTreeItem> docShellTreeItem =
-      do_QueryInterface(container);
+    nsCOMPtr<nsIDocShellTreeItem> docShellTreeItem = doc->GetDocShell();
     if (!docShellTreeItem)
       break;
 
@@ -1672,61 +1647,53 @@ Accessible::Value(nsString& aValue)
   }
 }
 
-// nsIAccessibleValue
-NS_IMETHODIMP
-Accessible::GetMaximumValue(double *aMaximumValue)
+double
+Accessible::MaxValue() const
 {
-  return GetAttrValue(nsGkAtoms::aria_valuemax, aMaximumValue);
+  return AttrNumericValue(nsGkAtoms::aria_valuemax);
 }
 
-NS_IMETHODIMP
-Accessible::GetMinimumValue(double *aMinimumValue)
+double
+Accessible::MinValue() const
 {
-  return GetAttrValue(nsGkAtoms::aria_valuemin, aMinimumValue);
+  return AttrNumericValue(nsGkAtoms::aria_valuemin);
 }
 
-NS_IMETHODIMP
-Accessible::GetMinimumIncrement(double *aMinIncrement)
+double
+Accessible::Step() const
 {
-  NS_ENSURE_ARG_POINTER(aMinIncrement);
-  *aMinIncrement = 0;
-
-  // No mimimum increment in dynamic content spec right now
-  return NS_OK_NO_ARIA_VALUE;
+  return UnspecifiedNaN(); // no mimimum increment (step) in ARIA.
 }
 
-NS_IMETHODIMP
-Accessible::GetCurrentValue(double *aValue)
+double
+Accessible::CurValue() const
 {
-  return GetAttrValue(nsGkAtoms::aria_valuenow, aValue);
+  return AttrNumericValue(nsGkAtoms::aria_valuenow);
 }
 
-NS_IMETHODIMP
-Accessible::SetCurrentValue(double aValue)
+bool
+Accessible::SetCurValue(double aValue)
 {
-  if (IsDefunct())
-    return NS_ERROR_FAILURE;
-
   if (!mRoleMapEntry || mRoleMapEntry->valueRule == eNoValue)
-    return NS_OK_NO_ARIA_VALUE;
+    return false;
 
   const uint32_t kValueCannotChange = states::READONLY | states::UNAVAILABLE;
-
   if (State() & kValueCannotChange)
-    return NS_ERROR_FAILURE;
+    return false;
 
-  double minValue = 0;
-  if (NS_SUCCEEDED(GetMinimumValue(&minValue)) && aValue < minValue)
-    return NS_ERROR_INVALID_ARG;
+  double checkValue = MinValue();
+  if (!IsNaN(checkValue) && aValue < checkValue)
+    return false;
 
-  double maxValue = 0;
-  if (NS_SUCCEEDED(GetMaximumValue(&maxValue)) && aValue > maxValue)
-    return NS_ERROR_INVALID_ARG;
+  checkValue = MaxValue();
+  if (!IsNaN(checkValue) && aValue > checkValue)
+    return false;
 
-  nsAutoString newValue;
-  newValue.AppendFloat(aValue);
-  return mContent->SetAttr(kNameSpaceID_None,
-                           nsGkAtoms::aria_valuenow, newValue, true);
+  nsAutoString strValue;
+  strValue.AppendFloat(aValue);
+
+  return NS_SUCCEEDED(
+    mContent->SetAttr(kNameSpaceID_None, nsGkAtoms::aria_valuenow, strValue, true));
 }
 
 /* void setName (in DOMString name); */
@@ -2489,18 +2456,37 @@ Accessible::ARIAName(nsString& aName)
 ENameValueFlag
 Accessible::NativeName(nsString& aName)
 {
-  if (mContent->IsHTML())
-    return GetHTMLName(aName);
+  if (mContent->IsHTML()) {
+    Accessible* label = nullptr;
+    HTMLLabelIterator iter(Document(), this);
+    while ((label = iter.Next())) {
+      nsTextEquivUtils::AppendTextEquivFromContent(this, label->GetContent(),
+                                                   &aName);
+      aName.CompressWhitespace();
+    }
 
-  if (mContent->IsXUL())
-    return GetXULName(aName);
+    if (!aName.IsEmpty())
+      return eNameOK;
+
+    nsTextEquivUtils::GetNameFromSubtree(this, aName);
+    return aName.IsEmpty() ? eNameOK : eNameFromSubtree;
+  }
+
+  if (mContent->IsXUL()) {
+    XULElmName(mDoc, mContent, aName);
+    if (!aName.IsEmpty())
+      return eNameOK;
+
+    nsTextEquivUtils::GetNameFromSubtree(this, aName);
+    return aName.IsEmpty() ? eNameOK : eNameFromSubtree;
+  }
 
   if (mContent->IsSVG()) {
     // If user agents need to choose among multiple ‘desc’ or ‘title’ elements
     // for processing, the user agent shall choose the first one.
     for (nsIContent* childElm = mContent->GetFirstChild(); childElm;
          childElm = childElm->GetNextSibling()) {
-      if (childElm->IsSVG(nsGkAtoms::desc)) {
+      if (childElm->IsSVG(nsGkAtoms::title)) {
         nsTextEquivUtils::AppendTextEquivFromContent(this, childElm, &aName);
         return eNameOK;
       }
@@ -3116,31 +3102,19 @@ Accessible::GetFirstAvailableAccessible(nsINode *aStartNode) const
   return nullptr;
 }
 
-nsresult
-Accessible::GetAttrValue(nsIAtom *aProperty, double *aValue)
+double
+Accessible::AttrNumericValue(nsIAtom* aAttr) const
 {
-  NS_ENSURE_ARG_POINTER(aValue);
-  *aValue = 0;
-
-  if (IsDefunct())
-    return NS_ERROR_FAILURE;  // Node already shut down
-
- if (!mRoleMapEntry || mRoleMapEntry->valueRule == eNoValue)
-    return NS_OK_NO_ARIA_VALUE;
+  if (!mRoleMapEntry || mRoleMapEntry->valueRule == eNoValue)
+    return UnspecifiedNaN();
 
   nsAutoString attrValue;
-  mContent->GetAttr(kNameSpaceID_None, aProperty, attrValue);
-
-  // Return zero value if there is no attribute or its value is empty.
-  if (attrValue.IsEmpty())
-    return NS_OK;
+  if (!mContent->GetAttr(kNameSpaceID_None, aAttr, attrValue))
+    return UnspecifiedNaN();
 
   nsresult error = NS_OK;
   double value = attrValue.ToDouble(&error);
-  if (NS_SUCCEEDED(error))
-    *aValue = value;
-
-  return NS_OK;
+  return NS_FAILED(error) ? UnspecifiedNaN() : value;
 }
 
 uint32_t

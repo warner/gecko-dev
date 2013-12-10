@@ -115,6 +115,14 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
     if (!JS_SetProperty(cx, info, "threadsafe", value))
         return false;
 
+#ifdef JS_WORKER_THREADS
+    value = BooleanValue(true);
+#else
+    value = BooleanValue(false);
+#endif
+    if (!JS_SetProperty(cx, info, "worker-threads", value))
+        return false;
+
 #ifdef JS_MORE_DETERMINISTIC
     value = BooleanValue(true);
 #else
@@ -251,7 +259,7 @@ MinorGC(JSContext *cx, unsigned argc, jsval *vp)
     if (args.get(0) == BooleanValue(true))
         cx->runtime()->gcStoreBuffer.setAboutToOverflow();
 
-    MinorGC(cx->runtime(), gcreason::API);
+    MinorGC(cx, gcreason::API);
 #endif
     return true;
 }
@@ -268,6 +276,9 @@ static const struct ParamPair {
     {"markStackLimit",      JSGC_MARK_STACK_LIMIT}
 };
 
+// Keep this in sync with above params.
+#define GC_PARAMETER_ARGS_LIST "maxBytes, maxMallocBytes, gcBytes, gcNumber, sliceTimeBudget, or markStackLimit"
+ 
 static bool
 GCParameter(JSContext *cx, unsigned argc, Value *vp)
 {
@@ -285,9 +296,7 @@ GCParameter(JSContext *cx, unsigned argc, Value *vp)
     for (;; paramIndex++) {
         if (paramIndex == ArrayLength(paramMap)) {
             JS_ReportError(cx,
-                           "the first argument argument must be maxBytes, "
-                           "maxMallocBytes, gcStackpoolLifespan, gcBytes or "
-                           "gcNumber");
+                           "the first argument must be one of " GC_PARAMETER_ARGS_LIST);
             return false;
         }
         if (JS_FlatStringEqualsAscii(flatStr, paramMap[paramIndex].name))
@@ -363,8 +372,8 @@ InternalConst(JSContext *cx, unsigned argc, jsval *vp)
     if (!flat)
         return false;
 
-    if (JS_FlatStringEqualsAscii(flat, "MARK_STACK_LENGTH")) {
-        vp[0] = UINT_TO_JSVAL(js::MARK_STACK_LENGTH);
+    if (JS_FlatStringEqualsAscii(flat, "INCREMENTAL_MARK_STACK_BASE_CAPACITY")) {
+        vp[0] = UINT_TO_JSVAL(js::INCREMENTAL_MARK_STACK_BASE_CAPACITY);
     } else {
         JS_ReportError(cx, "unknown const name");
         return false;
@@ -687,16 +696,9 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    jsval v;
-    int32_t traceKind;
-    JSString *str;
-    JSCountHeapTracer countTracer;
-    JSCountHeapNode *node;
-    size_t counter;
-
     RootedValue startValue(cx, UndefinedValue());
     if (args.length() > 0) {
-        v = args[0];
+        jsval v = args[0];
         if (JSVAL_IS_TRACEABLE(v)) {
             startValue = v;
         } else if (!JSVAL_IS_NULL(v)) {
@@ -707,28 +709,45 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
         }
     }
 
-    traceKind = -1;
+    RootedValue traceValue(cx);
+    int32_t traceKind = -1;
+    void *traceThing = nullptr;
     if (args.length() > 1) {
-        str = ToString(cx, args[0]);
+        JSString *str = ToString(cx, args[1]);
         if (!str)
             return false;
         JSFlatString *flatStr = JS_FlattenString(cx, str);
         if (!flatStr)
             return false;
-        for (size_t i = 0; ;) {
-            if (JS_FlatStringEqualsAscii(flatStr, traceKindNames[i].name)) {
-                traceKind = traceKindNames[i].kind;
-                break;
-            }
-            if (++i == ArrayLength(traceKindNames)) {
-                JSAutoByteString bytes(cx, str);
-                if (!!bytes)
-                    JS_ReportError(cx, "trace kind name '%s' is unknown", bytes.ptr());
+        if (JS_FlatStringEqualsAscii(flatStr, "specific")) {
+            if (args.length() < 3) {
+                JS_ReportError(cx, "tracing of specific value requested "
+                               "but no value provided");
                 return false;
+            }
+            traceValue = args[2];
+            if (!JSVAL_IS_TRACEABLE(traceValue)){
+                JS_ReportError(cx, "cannot trace this kind of value");
+                return false;
+            }
+            traceThing = JSVAL_TO_TRACEABLE(traceValue);
+        } else {
+            for (size_t i = 0; ;) {
+                if (JS_FlatStringEqualsAscii(flatStr, traceKindNames[i].name)) {
+                    traceKind = traceKindNames[i].kind;
+                    break;
+                }
+                if (++i == ArrayLength(traceKindNames)) {
+                    JSAutoByteString bytes(cx, str);
+                    if (!!bytes)
+                        JS_ReportError(cx, "trace kind name '%s' is unknown", bytes.ptr());
+                    return false;
+                }
             }
         }
     }
 
+    JSCountHeapTracer countTracer;
     JS_TracerInit(&countTracer.base, JS_GetRuntime(cx), CountHeapNotify);
     if (!countTracer.visited.init()) {
         JS_ReportOutOfMemory(cx);
@@ -744,10 +763,18 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
         JS_CallValueTracer(&countTracer.base, startValue.address(), "root");
     }
 
-    counter = 0;
+    JSCountHeapNode *node;
+    size_t counter = 0;
     while ((node = countTracer.traceList) != nullptr) {
-        if (traceKind == -1 || node->kind == traceKind)
-            counter++;
+        if (traceThing == nullptr) {
+            // We are looking for all nodes with a specific kind
+            if (traceKind == -1 || node->kind == traceKind)
+                counter++;
+        } else {
+            // We are looking for some specific thing
+            if (node->thing == traceThing)
+                counter++;
+        }
         countTracer.traceList = node->next;
         node->next = countTracer.recycleList;
         countTracer.recycleList = node;
@@ -853,15 +880,17 @@ DumpHeapComplete(JSContext *cx, unsigned argc, jsval *vp)
     if (argc > i) {
         Value v = args[i];
         if (v.isString()) {
-            JSString *str = v.toString();
-            JSAutoByteString fileNameBytes;
-            if (!fileNameBytes.encodeLatin1(cx, str))
-                return false;
-            const char *fileName = fileNameBytes.ptr();
-            dumpFile = fopen(fileName, "w");
-            if (!dumpFile) {
-                JS_ReportError(cx, "can't open %s", fileName);
-                return false;
+            if (!fuzzingSafe) {
+                JSString *str = v.toString();
+                JSAutoByteString fileNameBytes;
+                if (!fileNameBytes.encodeLatin1(cx, str))
+                    return false;
+                const char *fileName = fileNameBytes.ptr();
+                dumpFile = fopen(fileName, "w");
+                if (!dumpFile) {
+                    JS_ReportError(cx, "can't open %s", fileName);
+                    return false;
+                }
             }
             ++i;
         }
@@ -884,6 +913,12 @@ DumpHeapComplete(JSContext *cx, unsigned argc, jsval *vp)
 static bool
 Terminate(JSContext *cx, unsigned arg, jsval *vp)
 {
+#ifdef JS_MORE_DETERMINISTIC
+    // Print a message to stderr in more-deterministic builds to help jsfunfuzz
+    // find uncatchable-exception bugs.
+    fprintf(stderr, "terminate called\n");
+#endif
+
     JS_ClearPendingException(cx);
     return false;
 }
@@ -1086,11 +1121,11 @@ SetJitCompilerOption(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 static bool
-SetIonAssertGraphCoherency(JSContext *cx, unsigned argc, jsval *vp)
+SetIonCheckGraphCoherency(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 #ifdef JS_ION
-    jit::js_IonOptions.assertGraphConsistency = ToBoolean(args.get(0));
+    jit::js_IonOptions.checkGraphConsistency = ToBoolean(args.get(0));
 #endif
     args.rval().setUndefined();
     return true;
@@ -1329,7 +1364,19 @@ Neuter(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    return JS_NeuterArrayBuffer(cx, obj);
+    if (!JS_NeuterArrayBuffer(cx, obj))
+        return false;
+
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+WorkerThreadCount(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setNumber(static_cast<double>(cx->runtime()->workerThreadCount()));
+    return true;
 }
 
 static const JSFunctionSpecWithHelp TestingFunctions[] = {
@@ -1346,8 +1393,7 @@ static const JSFunctionSpecWithHelp TestingFunctions[] = {
 
     JS_FN_HELP("gcparam", GCParameter, 2, 0,
 "gcparam(name [, value])",
-"  Wrapper for JS_[GS]etGCParameter. The name is either maxBytes,\n"
-"  maxMallocBytes, gcBytes, gcNumber, or sliceTimeBudget."),
+"  Wrapper for JS_[GS]etGCParameter. The name is one of " GC_PARAMETER_ARGS_LIST),
 
     JS_FN_HELP("getBuildConfiguration", GetBuildConfiguration, 0, 0,
 "getBuildConfiguration()",
@@ -1355,11 +1401,13 @@ static const JSFunctionSpecWithHelp TestingFunctions[] = {
 "  was built with."),
 
     JS_FN_HELP("countHeap", CountHeap, 0, 0,
-"countHeap([start[, kind]])",
+"countHeap([start[, kind[, thing]]])",
 "  Count the number of live GC things in the heap or things reachable from\n"
 "  start when it is given and is not null. kind is either 'all' (default) to\n"
 "  count all things or one of 'object', 'double', 'string', 'function'\n"
-"  to count only things of that kind."),
+"  to count only things of that kind. If kind is the string 'specific',\n"
+"  then you can provide an extra argument with some specific traceable\n"
+"  thing to count.\n"),
 
 #ifdef DEBUG
     JS_FN_HELP("oomAfterAllocations", OOMAfterAllocations, 1, 0,
@@ -1531,8 +1579,8 @@ static const JSFunctionSpecWithHelp TestingFunctions[] = {
 "setCompilerOption(<option>, <number>)",
 "  Set a compiler option indexed in JSCompileOption enum to a number.\n"),
 
-    JS_FN_HELP("setIonAssertGraphCoherency", SetIonAssertGraphCoherency, 1, 0,
-"setIonAssertGraphCoherency(bool)",
+    JS_FN_HELP("setIonCheckGraphCoherency", SetIonCheckGraphCoherency, 1, 0,
+"setIonCheckGraphCoherency(bool)",
 "  Set whether Ion should perform graph consistency (DEBUG-only) assertions. These assertions\n"
 "  are valuable and should be generally enabled, however they can be very expensive for large\n"
 "  (asm.js) programs."),
@@ -1549,6 +1597,10 @@ static const JSFunctionSpecWithHelp TestingFunctions[] = {
     JS_FN_HELP("neuter", Neuter, 1, 0,
 "neuter(buffer)",
 "  Neuter the given ArrayBuffer object as if it had been transferred to a WebWorker."),
+
+    JS_FN_HELP("workerThreadCount", WorkerThreadCount, 0, 0,
+"workerThreadCount()",
+"  Returns the number of worker threads available for off-main-thread tasks."),
 
     JS_FS_HELP_END
 };

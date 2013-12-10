@@ -301,18 +301,6 @@ class TestRecursiveMakeBackend(BackendTester):
             'FAIL_ON_WARNINGS': [
                 'FAIL_ON_WARNINGS := 1',
             ],
-            'GTEST_CMMSRCS': [
-                'GTEST_CMMSRCS += test1.mm',
-                'GTEST_CMMSRCS += test2.mm',
-            ],
-            'GTEST_CPPSRCS': [
-                'GTEST_CPPSRCS += test1.cpp',
-                'GTEST_CPPSRCS += test2.cpp',
-            ],
-            'GTEST_CSRCS': [
-                'GTEST_CSRCS += test1.c',
-                'GTEST_CSRCS += test2.c',
-            ],
             'HOST_CPPSRCS': [
                 'HOST_CPPSRCS += bar.cpp',
                 'HOST_CPPSRCS += foo.cpp',
@@ -323,9 +311,6 @@ class TestRecursiveMakeBackend(BackendTester):
             ],
             'HOST_LIBRARY_NAME': [
                 'HOST_LIBRARY_NAME := host_bar',
-            ],
-            'LIBRARY_NAME': [
-                'LIBRARY_NAME := lib_name',
             ],
             'LIBXUL_LIBRARY': [
                 'LIBXUL_LIBRARY := 1',
@@ -341,10 +326,6 @@ class TestRecursiveMakeBackend(BackendTester):
             'SDK_LIBRARY': [
                 'SDK_LIBRARY += bar.sdk',
                 'SDK_LIBRARY += foo.sdk',
-            ],
-            'SHARED_LIBRARY_LIBS': [
-                'SHARED_LIBRARY_LIBS += bar.sll',
-                'SHARED_LIBRARY_LIBS += foo.sll',
             ],
             'SSRCS': [
                 'SSRCS += baz.S',
@@ -400,6 +381,18 @@ class TestRecursiveMakeBackend(BackendTester):
             self.assertIn('dir1/test_bar.js', o)
 
             self.assertEqual(len(o['xpcshell.js']), 1)
+
+    def test_test_manifest_pattern_matches_recorded(self):
+        """Pattern matches in test manifests' support-files should be recorded."""
+        env = self._consume('test-manifests-written', RecursiveMakeBackend)
+        m = InstallManifest(path=os.path.join(env.topobjdir,
+            '_build_manifests', 'install', 'tests'))
+
+        # This is not the most robust test in the world, but it gets the job
+        # done.
+        entries = [e for e in m._dests.keys() if '**' in e]
+        self.assertEqual(len(entries), 1)
+        self.assertIn('support/**', entries[0])
 
     def test_xpidl_generation(self):
         """Ensure xpidl files and directories are written out."""
@@ -494,7 +487,7 @@ class TestRecursiveMakeBackend(BackendTester):
         var = 'DEFINES'
         defines = [val for val in lines if val.startswith(var)]
 
-        expected = ['DEFINES += -DFOO -DBAZ=\'"abcd"\' -DBAR=7 -DVALUE=\'xyz\'']
+        expected = ['DEFINES += -DFOO -DBAZ=\'"ab\'\\\'\'cd"\' -DBAR=7 -DVALUE=\'xyz\'']
         self.assertEqual(defines, expected)
 
     def test_local_includes(self):

@@ -308,7 +308,7 @@ public:
    * @param aRegion The region that has been changed, if nil, it means that the
    * entire surface should be updated.
    */
-  virtual void Updated(const nsIntRegion* aRegion) {}
+  virtual void Updated(const nsIntRegion* aRegion = nullptr) {}
 
   /**
    * Sets this TextureHost's compositor.
@@ -357,7 +357,7 @@ public:
    * Debug facility.
    * XXX - cool kids use Moz2D. See bug 882113.
    */
-  virtual already_AddRefed<gfxImageSurface> GetAsSurface() = 0;
+  virtual TemporaryRef<gfx::DataSourceSurface> GetAsSurface() = 0;
 
   /**
    * XXX - Flags should only be set at creation time, this will be removed.
@@ -383,6 +383,10 @@ public:
   }
 
   virtual void SetCompositableBackendSpecificData(CompositableBackendSpecificData* aBackendData);
+
+  // If a texture host holds a reference to shmem, it should override this method
+  // to forget about the shmem _without_ releasing it.
+  virtual void OnActorDestroy() {}
 
   virtual const char *Name() { return "TextureHost"; }
   virtual void PrintInfo(nsACString& aTo, const char* aPrefix);
@@ -418,7 +422,7 @@ public:
 
   virtual uint8_t* GetBuffer() = 0;
 
-  virtual void Updated(const nsIntRegion* aRegion) MOZ_OVERRIDE;
+  virtual void Updated(const nsIntRegion* aRegion = nullptr) MOZ_OVERRIDE;
 
   virtual bool Lock() MOZ_OVERRIDE;
 
@@ -441,7 +445,7 @@ public:
 
   virtual gfx::IntSize GetSize() const MOZ_OVERRIDE { return mSize; }
 
-  virtual already_AddRefed<gfxImageSurface> GetAsSurface() MOZ_OVERRIDE;
+  virtual TemporaryRef<gfx::DataSourceSurface> GetAsSurface() MOZ_OVERRIDE;
 
 protected:
   bool Upload(nsIntRegion *aRegion = nullptr);
@@ -480,9 +484,11 @@ public:
 
   virtual const char *Name() MOZ_OVERRIDE { return "ShmemTextureHost"; }
 
+  virtual void OnActorDestroy() MOZ_OVERRIDE;
+
 protected:
   mozilla::ipc::Shmem* mShmem;
-  ISurfaceAllocator* mDeallocator;
+  RefPtr<ISurfaceAllocator> mDeallocator;
 };
 
 /**
@@ -656,7 +662,7 @@ public:
     return LayerRenderState();
   }
 
-  virtual already_AddRefed<gfxImageSurface> GetAsSurface() = 0;
+  virtual TemporaryRef<gfx::DataSourceSurface> GetAsSurface() = 0;
 
   virtual const char *Name() = 0;
   virtual void PrintInfo(nsACString& aTo, const char* aPrefix);
@@ -699,16 +705,13 @@ public:
    */
   // only made virtual to allow overriding in GrallocDeprecatedTextureHostOGL, for hacky fix in gecko 23 for bug 862324.
   // see bug 865908 about fixing this.
-  virtual void SetBuffer(SurfaceDescriptor* aBuffer, ISurfaceAllocator* aAllocator)
-  {
-    MOZ_ASSERT(!mBuffer || mBuffer == aBuffer, "Will leak the old mBuffer");
-    mBuffer = aBuffer;
-    mDeAllocator = aAllocator;
-  }
+  virtual void SetBuffer(SurfaceDescriptor* aBuffer, ISurfaceAllocator* aAllocator);
 
   // used only for hacky fix in gecko 23 for bug 862324
   // see bug 865908 about fixing this.
   virtual void ForgetBuffer() {}
+
+  void OnActorDestroy();
 
 protected:
   /**
@@ -754,7 +757,7 @@ protected:
                               // which can go away under our feet at any time. This is the cause
                               // of bug 862324 among others. Our current understanding is that
                               // this will be gone in Gecko 24. See bug 858914.
-  ISurfaceAllocator* mDeAllocator;
+  RefPtr<ISurfaceAllocator> mDeAllocator;
   gfx::SurfaceFormat mFormat;
 };
 

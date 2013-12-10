@@ -92,7 +92,7 @@ InitObjectEntry(PLDHashTable* table, PLDHashEntryHdr* entry, const void* key)
   
 
 
-static PLDHashTableOps ObjectTableOps = {
+static const PLDHashTableOps ObjectTableOps = {
   PL_DHashAllocTable,
   PL_DHashFreeTable,
   PL_DHashVoidPtrKeyStub,
@@ -1090,7 +1090,7 @@ void
 nsBindingManager::ClearInsertionPointsRecursively(nsIContent* aContent)
 {
   if (aContent->NodeInfo()->Equals(nsGkAtoms::children, kNameSpaceID_XBL)) {
-    static_cast<XBLChildrenElement*>(aContent)->ClearInsertedChildrenAndInsertionParents();
+    static_cast<XBLChildrenElement*>(aContent)->ClearInsertedChildren();
   }
 
   for (nsIContent* child = aContent->GetFirstChild(); child;

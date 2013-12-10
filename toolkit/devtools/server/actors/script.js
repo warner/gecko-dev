@@ -261,19 +261,22 @@ BreakpointStore.prototype = {
  * @param nsIJSInspector inspector
  *        The underlying JS inspector we use to enter and exit nested event
  *        loops.
+ * @param ThreadActor thread
+ *        The thread actor instance that owns this EventLoopStack.
+ * @param DebuggerServerConnection connection
+ *        The remote protocol connection associated with this event loop stack.
  * @param Object hooks
  *        An object with the following properties:
  *          - url: The URL string of the debuggee we are spinning an event loop
  *                 for.
  *          - preNest: function called before entering a nested event loop
  *          - postNest: function called after exiting a nested event loop
- * @param ThreadActor thread
- *        The thread actor instance that owns this EventLoopStack.
  */
-function EventLoopStack({ inspector, thread, hooks }) {
+function EventLoopStack({ inspector, thread, connection, hooks }) {
   this._inspector = inspector;
   this._hooks = hooks;
   this._thread = thread;
+  this._connection = connection;
 }
 
 EventLoopStack.prototype = {
@@ -302,6 +305,14 @@ EventLoopStack.prototype = {
   },
 
   /**
+   * The DebuggerServerConnection of the debugger who pushed the event loop on
+   * top of the stack
+   */
+  get lastConnection() {
+    return this._inspector.lastNestRequestor._connection;
+  },
+
+  /**
    * Push a new nested event loop onto the stack.
    *
    * @returns EventLoop
@@ -310,6 +321,7 @@ EventLoopStack.prototype = {
     return new EventLoop({
       inspector: this._inspector,
       thread: this._thread,
+      connection: this._connection,
       hooks: this._hooks
     });
   }
@@ -323,14 +335,17 @@ EventLoopStack.prototype = {
  *        The JS Inspector that runs nested event loops.
  * @param ThreadActor thread
  *        The thread actor that is creating this nested event loop.
+ * @param DebuggerServerConnection connection
+ *        The remote protocol connection associated with this event loop.
  * @param Object hooks
  *        The same hooks object passed into EventLoopStack during its
  *        initialization.
  */
-function EventLoop({ inspector, thread, hooks }) {
+function EventLoop({ inspector, thread, connection, hooks }) {
   this._inspector = inspector;
   this._thread = thread;
   this._hooks = hooks;
+  this._connection = connection;
 
   this.enter = this.enter.bind(this);
   this.resolve = this.resolve.bind(this);
@@ -403,9 +418,7 @@ EventLoop.prototype = {
  *
  * @param aHooks object
  *        An object with preNest and postNest methods for calling when entering
- *        and exiting a nested event loop, addToParentPool and
- *        removeFromParentPool methods for handling the lifetime of actors that
- *        will outlive the thread, like breakpoints.
+ *        and exiting a nested event loop.
  * @param aGlobal object [optional]
  *        An optional (for content debugging only) reference to the content
  *        window.
@@ -416,11 +429,6 @@ function ThreadActor(aHooks, aGlobal)
   this._frameActors = [];
   this._hooks = aHooks;
   this.global = aGlobal;
-  this._nestedEventLoops = new EventLoopStack({
-    inspector: DebuggerServer.xpcInspector,
-    hooks: aHooks,
-    thread: this
-  });
   // A map of actorID -> actor for breakpoints created and managed by the server.
   this._hiddenBreakpoints = new Map();
 
@@ -527,12 +535,13 @@ ThreadActor.prototype = {
     eventLoop.resolve();
   },
 
+  /**
+   * Remove all debuggees and clear out the thread's sources.
+   */
   clearDebuggees: function () {
     if (this.dbg) {
       this.dbg.removeAllDebuggees();
     }
-    this.conn.removeActorPool(this._threadLifetimePool || undefined);
-    this._threadLifetimePool = null;
     this._sources = null;
   },
 
@@ -636,6 +645,8 @@ ThreadActor.prototype = {
     this._state = "exited";
 
     this.clearDebuggees();
+    this.conn.removeActorPool(this._threadLifetimePool);
+    this._threadLifetimePool = null;
 
     if (this._prettyPrintWorker) {
       this._prettyPrintWorker.removeEventListener(
@@ -673,6 +684,15 @@ ThreadActor.prototype = {
     this._state = "attached";
 
     update(this._options, aRequest.options || {});
+
+    // Initialize an event loop stack. This can't be done in the constructor,
+    // because this.conn is not yet initialized by the actor pool at that time.
+    this._nestedEventLoops = new EventLoopStack({
+      inspector: DebuggerServer.xpcInspector,
+      hooks: this._hooks,
+      connection: this.conn,
+      thread: this
+    });
 
     if (!this.dbg) {
       this._initDebugger();
@@ -991,7 +1011,8 @@ ThreadActor.prototype = {
     // different tabs or multiple debugger clients connected to the same tab)
     // only allow resumption in a LIFO order.
     if (this._nestedEventLoops.size && this._nestedEventLoops.lastPausedUrl
-        && this._nestedEventLoops.lastPausedUrl !== this._hooks.url) {
+        && (this._nestedEventLoops.lastPausedUrl !== this._hooks.url
+        || this._nestedEventLoops.lastConnection !== this.conn)) {
       return {
         error: "wrongOrder",
         message: "trying to resume in the wrong order.",
@@ -1365,7 +1386,7 @@ ThreadActor.prototype = {
         line: aLocation.line,
         column: aLocation.column
       });
-      this._hooks.addToParentPool(actor);
+      this.threadLifetimePool.addActor(actor);
     }
 
     // Find all scripts matching the given location
@@ -2648,6 +2669,146 @@ SourceActor.prototype.requestTypes = {
 
 
 /**
+ * Determine if a given value is non-primitive.
+ *
+ * @param Any aValue
+ *        The value to test.
+ * @return Boolean
+ *         Whether the value is non-primitive.
+ */
+function isObject(aValue) {
+  const type = typeof aValue;
+  return type == "object" ? aValue !== null : type == "function";
+}
+
+/**
+ * Create a function that can safely stringify Debugger.Objects of a given
+ * builtin type.
+ *
+ * @param Function aCtor
+ *        The builtin class constructor.
+ * @return Function
+ *         The stringifier for the class.
+ */
+function createBuiltinStringifier(aCtor) {
+  return aObj => aCtor.prototype.toString.call(aObj.unsafeDereference());
+}
+
+/**
+ * Stringify a Debugger.Object-wrapped Error instance.
+ *
+ * @param Debugger.Object aObj
+ *        The object to stringify.
+ * @return String
+ *         The stringification of the object.
+ */
+function errorStringify(aObj) {
+  let name = DevToolsUtils.getProperty(aObj, "name");
+  if (name === "" || name === undefined) {
+    name = aObj.class;
+  } else if (isObject(name)) {
+    name = stringify(name);
+  }
+
+  let message = DevToolsUtils.getProperty(aObj, "message");
+  if (isObject(message)) {
+    message = stringify(message);
+  }
+
+  if (message === "" || message === undefined) {
+    return name;
+  }
+  return name + ": " + message;
+}
+
+/**
+ * Stringify a Debugger.Object based on its class.
+ *
+ * @param Debugger.Object aObj
+ *        The object to stringify.
+ * @return String
+ *         The stringification for the object.
+ */
+function stringify(aObj) {
+  if (Cu.isDeadWrapper(aObj)) {
+    const error = new Error("Dead object encountered.");
+    DevToolsUtils.reportException("stringify", error);
+    return "<dead object>";
+  }
+  const stringifier = stringifiers[aObj.class] || stringifiers.Object;
+  return stringifier(aObj);
+}
+
+// Used to prevent infinite recursion when an array is found inside itself.
+let seen = null;
+
+let stringifiers = {
+  Error: errorStringify,
+  EvalError: errorStringify,
+  RangeError: errorStringify,
+  ReferenceError: errorStringify,
+  SyntaxError: errorStringify,
+  TypeError: errorStringify,
+  URIError: errorStringify,
+  Boolean: createBuiltinStringifier(Boolean),
+  Function: createBuiltinStringifier(Function),
+  Number: createBuiltinStringifier(Number),
+  RegExp: createBuiltinStringifier(RegExp),
+  String: createBuiltinStringifier(String),
+  Object: obj => "[object " + obj.class + "]",
+  Array: obj => {
+    // If we're at the top level then we need to create the Set for tracking
+    // previously stringified arrays.
+    const topLevel = !seen;
+    if (topLevel) {
+      seen = new Set();
+    } else if (seen.has(obj)) {
+      return "";
+    }
+
+    seen.add(obj);
+
+    const len = DevToolsUtils.getProperty(obj, "length");
+    let string = "";
+
+    // The following check is only required because the debuggee could possibly
+    // be a Proxy and return any value. For normal objects, array.length is
+    // always a non-negative integer.
+    if (typeof len == "number" && len > 0) {
+      for (let i = 0; i < len; i++) {
+        const desc = obj.getOwnPropertyDescriptor(i);
+        if (desc) {
+          const { value } = desc;
+          if (value != null) {
+            string += isObject(value) ? stringify(value) : value;
+          }
+        }
+
+        if (i < len - 1) {
+          string += ",";
+        }
+      }
+    }
+
+    if (topLevel) {
+      seen = null;
+    }
+
+    return string;
+  },
+  DOMException: obj => {
+    const message = DevToolsUtils.getProperty(obj, "message") || "<no message>";
+    const result = (+DevToolsUtils.getProperty(obj, "result")).toString(16);
+    const code = DevToolsUtils.getProperty(obj, "code");
+    const name = DevToolsUtils.getProperty(obj, "name") || "<unknown>";
+
+    return '[Exception... "' + message + '" ' +
+           'code: "' + code +'" ' +
+           'nsresult: "0x' + result + ' (' + name + ')"]';
+  }
+};
+
+/**
  * Creates an actor for the specified object.
  *
  * @param aObj Debugger.Object
@@ -2663,8 +2824,6 @@ function ObjectActor(aObj, aThreadActor)
 
 ObjectActor.prototype = {
   actorPrefix: "obj",
-
-  _forcedMagicProps: false,
 
   /**
    * Returns a grip for this actor for returning in a protocol message.
@@ -2700,12 +2859,6 @@ ObjectActor.prototype = {
         // with "permission denied" errors for some functions.
         dumpn(e);
       }
-
-      // Add source location information.
-      if (this.obj.script) {
-        g.url = this.obj.script.url;
-        g.line = this.obj.script.startLine;
-      }
     }
 
     return g;
@@ -2722,24 +2875,45 @@ ObjectActor.prototype = {
   },
 
   /**
-   * Force the magic Error properties to appear.
+   * Handle a protocol request to provide the definition site of this function
+   * object.
+   *
+   * @param aRequest object
+   *        The protocol request object.
    */
-  _forceMagicProperties: function () {
-    if (this._forcedMagicProps) {
-      return;
+  onDefinitionSite: function OA_onDefinitionSite(aRequest) {
+    if (this.obj.class != "Function") {
+      return {
+        from: this.actorID,
+        error: "objectNotFunction",
+        message: this.actorID + " is not a function."
+      };
     }
 
-    const MAGIC_ERROR_PROPERTIES = [
-      "message", "stack", "fileName", "lineNumber", "columnNumber"
-    ];
-
-    if (this.obj.class.endsWith("Error")) {
-      for (let property of MAGIC_ERROR_PROPERTIES) {
-        this._propertyDescriptor(property);
-      }
+    if (!this.obj.script) {
+      return {
+        from: this.actorID,
+        error: "noScript",
+        message: this.actorID + " has no Debugger.Script"
+      };
     }
 
-    this._forcedMagicProps = true;
+    const generatedLocation = {
+      url: this.obj.script.url,
+      line: this.obj.script.startLine,
+      // TODO bug 901138: use Debugger.Script.prototype.startColumn.
+      column: 0
+    };
+
+    return this.threadActor.sources.getOriginalLocation(generatedLocation)
+      .then(({ url, line, column }) => {
+        return {
+          from: this.actorID,
+          url: url,
+          line: line,
+          column: column
+        };
+      });
   },
 
   /**
@@ -2750,7 +2924,6 @@ ObjectActor.prototype = {
    *        The protocol request object.
    */
   onOwnPropertyNames: function (aRequest) {
-    this._forceMagicProperties();
     return { from: this.actorID,
              ownPropertyNames: this.obj.getOwnPropertyNames() };
   },
@@ -2763,7 +2936,6 @@ ObjectActor.prototype = {
    *        The protocol request object.
    */
   onPrototypeAndProperties: function (aRequest) {
-    this._forceMagicProperties();
     let ownProperties = Object.create(null);
     let names;
     try {
@@ -2883,9 +3055,7 @@ ObjectActor.prototype = {
         continue;
       }
 
-      let fn = desc.get;
-      if (fn && fn.callable && fn.class == "Function" &&
-          fn.script === undefined) {
+      if (DevToolsUtils.hasSafeGetter(desc)) {
         getters.add(name);
       }
     }
@@ -2929,34 +3099,9 @@ ObjectActor.prototype = {
    *        The protocol request object.
    */
   onDisplayString: function (aRequest) {
-    let toString;
-    try {
-      // Attempt to locate the object's "toString" method.
-      let obj = this.obj;
-      do {
-        let desc = obj.getOwnPropertyDescriptor("toString");
-        if (desc) {
-          toString = desc.value;
-          break;
-        }
-        obj = obj.proto;
-      } while ((obj));
-    } catch (e) {
-      dumpn(e);
-    }
-
-    let result = null;
-    if (toString && toString.callable) {
-      // If a toString method was found then call it on the object.
-      let ret = toString.call(this.obj).return;
-      if (typeof ret == "string") {
-        // Only use the result if it was a returned string.
-        result = ret;
-      }
-    }
-
+    const string = stringify(this.obj);
     return { from: this.actorID,
-             displayString: this.threadActor.createValueGrip(result) };
+             displayString: this.threadActor.createValueGrip(string) };
   },
 
   /**
@@ -3074,6 +3219,7 @@ ObjectActor.prototype = {
 };
 
 ObjectActor.prototype.requestTypes = {
+  "definitionSite": ObjectActor.prototype.onDefinitionSite,
   "parameterNames": ObjectActor.prototype.onParameterNames,
   "prototypeAndProperties": ObjectActor.prototype.onPrototypeAndProperties,
   "prototype": ObjectActor.prototype.onPrototype,
@@ -3415,7 +3561,7 @@ BreakpointActor.prototype = {
   onDelete: function (aRequest) {
     // Remove from the breakpoint store.
     this.threadActor.breakpointStore.removeBreakpoint(this.location);
-    this.threadActor._hooks.removeFromParentPool(this);
+    this.threadActor.threadLifetimePool.removeActor(this);
     // Remove the actual breakpoint from the associated scripts.
     this.removeScripts();
     return { from: this.actorID };
@@ -3665,9 +3811,7 @@ Object.defineProperty(Debugger.Frame.prototype, "line", {
  *
  * @param aHooks object
  *        An object with preNest and postNest methods for calling when entering
- *        and exiting a nested event loop and also addToParentPool and
- *        removeFromParentPool methods for handling the lifetime of actors that
- *        will outlive the thread, like breakpoints.
+ *        and exiting a nested event loop.
  */
 function ChromeDebuggerActor(aConnection, aHooks)
 {
@@ -3746,7 +3890,7 @@ function ThreadSources(aThreadActor, aUseSourceMaps, aAllowPredicate,
  * Must be a class property because it needs to persist across reloads, same as
  * the breakpoint store.
  */
-ThreadSources._blackBoxedSources = new Set();
+ThreadSources._blackBoxedSources = new Set(["self-hosted"]);
 ThreadSources._prettyPrintedSources = new Map();
 
 ThreadSources.prototype = {

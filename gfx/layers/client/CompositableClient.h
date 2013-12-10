@@ -88,6 +88,12 @@ public:
   CreateBufferTextureClient(gfx::SurfaceFormat aFormat,
                             TextureFlags aFlags = TEXTURE_FLAGS_DEFAULT);
 
+  // If we return a non-null TextureClient, then AsTextureClientDrawTarget will
+  // always be non-null.
+  TemporaryRef<TextureClient>
+  CreateTextureClientForDrawing(gfx::SurfaceFormat aFormat,
+                                TextureFlags aTextureFlags);
+
   virtual void SetDescriptorFromReply(TextureIdentifier aTextureId,
                                       const SurfaceDescriptor& aDescriptor)
   {
@@ -161,7 +167,16 @@ public:
    * Only call this if you know what you are doing.
    */
   void FlushTexturesToRemoveCallbacks();
+
+  /**
+   * Our IPDL actor is being destroyed, get rid of any shmem resources now.
+   */
+  virtual void OnActorDestroy() = 0;
+
 protected:
+  // return the next texture ID
+  uint64_t NextTextureID();
+
   struct TextureIDAndFlags {
     TextureIDAndFlags(uint64_t aID, TextureFlags aFlags)
     : mID(aID), mFlags(aFlags) {}
@@ -206,6 +221,8 @@ public:
   {
     return mCompositableClient;
   }
+
+  virtual void ActorDestroy(ActorDestroyReason why) MOZ_OVERRIDE;
 
   void SetAsyncID(uint64_t aID) { mID = aID; }
   uint64_t GetAsyncID() const

@@ -4,8 +4,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-MODULE = 'xpcomsample'
-
 # We must specify CPP_SOURCES in order to link using the proper c++ linker
 # on certain platforms.
 SOURCES += [
@@ -16,3 +14,7 @@ SOURCES += [
 SIMPLE_PROGRAMS += [
     'nsTestSample'
 ]
+
+# Whatever code is going to be linked with the *standalone* glue must be
+# built with the XPCOM_GLUE define set.
+DEFINES['XPCOM_GLUE'] = True

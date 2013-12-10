@@ -9,7 +9,9 @@
 
 #include "jsfriendapi.h"
 #include "jswrapper.h"
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/Alignment.h"
+#include "mozilla/Array.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/CallbackObject.h"
 #include "mozilla/dom/DOMJSClass.h"
@@ -20,8 +22,9 @@
 #include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/workers/Workers.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/Likely.h"
-#include "mozilla/Util.h"
+#include "mozilla/MemoryReporting.h"
 #include "nsCycleCollector.h"
 #include "nsIXPConnect.h"
 #include "MainThreadUtils.h"
@@ -191,9 +194,9 @@ IsDOMObject(JSObject* obj)
   return IsDOMClass(clasp) || IsDOMProxy(obj, clasp);
 }
 
-#define UNWRAP_OBJECT(Interface, cx, obj, value)                             \
+#define UNWRAP_OBJECT(Interface, obj, value)                                 \
   mozilla::dom::UnwrapObject<mozilla::dom::prototypes::id::Interface,        \
-    mozilla::dom::Interface##Binding::NativeType>(cx, obj, value)
+    mozilla::dom::Interface##Binding::NativeType>(obj, value)
 
 // Some callers don't want to set an exception when unwrapping fails
 // (for example, overload resolution uses unwrapping to tell what sort
@@ -201,7 +204,7 @@ IsDOMObject(JSObject* obj)
 // U must be something that a T* can be assigned to (e.g. T* or an nsRefPtr<T>).
 template <prototypes::ID PrototypeID, class T, typename U>
 MOZ_ALWAYS_INLINE nsresult
-UnwrapObject(JSContext* cx, JSObject* obj, U& value)
+UnwrapObject(JSObject* obj, U& value)
 {
   /* First check to see whether we have a DOM object */
   const DOMClass* domClass = GetDOMClass(obj);
@@ -279,13 +282,29 @@ static_assert((size_t)constructors::id::_ID_Start ==
               "Overlapping or discontiguous indexes.");
 const size_t kProtoAndIfaceCacheCount = constructors::id::_ID_Count;
 
+class ProtoAndIfaceArray : public Array<JS::Heap<JSObject*>, kProtoAndIfaceCacheCount>
+{
+public:
+  ProtoAndIfaceArray() {
+    MOZ_COUNT_CTOR(ProtoAndIfaceArray);
+  }
+
+  ~ProtoAndIfaceArray() {
+    MOZ_COUNT_DTOR(ProtoAndIfaceArray);
+  }
+
+  size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) {
+    return aMallocSizeOf(this);
+  }
+};
+
 inline void
 AllocateProtoAndIfaceCache(JSObject* obj)
 {
   MOZ_ASSERT(js::GetObjectClass(obj)->flags & JSCLASS_DOM_GLOBAL);
   MOZ_ASSERT(js::GetReservedSlot(obj, DOM_PROTOTYPE_SLOT).isUndefined());
 
-  JS::Heap<JSObject*>* protoAndIfaceArray = new JS::Heap<JSObject*>[kProtoAndIfaceCacheCount];
+  ProtoAndIfaceArray* protoAndIfaceArray = new ProtoAndIfaceArray();
 
   js::SetReservedSlot(obj, DOM_PROTOTYPE_SLOT,
                       JS::PrivateValue(protoAndIfaceArray));
@@ -298,8 +317,8 @@ TraceProtoAndIfaceCache(JSTracer* trc, JSObject* obj)
 
   if (!HasProtoAndIfaceArray(obj))
     return;
-  JS::Heap<JSObject*>* protoAndIfaceArray = GetProtoAndIfaceArray(obj);
-  for (size_t i = 0; i < kProtoAndIfaceCacheCount; ++i) {
+  ProtoAndIfaceArray& protoAndIfaceArray = *GetProtoAndIfaceArray(obj);
+  for (size_t i = 0; i < ArrayLength(protoAndIfaceArray); ++i) {
     if (protoAndIfaceArray[i]) {
       JS_CallHeapObjectTracer(trc, &protoAndIfaceArray[i], "protoAndIfaceArray[i]");
     }
@@ -311,9 +330,9 @@ DestroyProtoAndIfaceCache(JSObject* obj)
 {
   MOZ_ASSERT(js::GetObjectClass(obj)->flags & JSCLASS_DOM_GLOBAL);
 
-  JS::Heap<JSObject*>* protoAndIfaceArray = GetProtoAndIfaceArray(obj);
+  ProtoAndIfaceArray* protoAndIfaceArray = GetProtoAndIfaceArray(obj);
 
-  delete [] protoAndIfaceArray;
+  delete protoAndIfaceArray;
 }
 
 /**
@@ -2055,7 +2074,7 @@ ReportLenientThisUnwrappingFailure(JSContext* cx, JSObject* obj);
 inline JSObject*
 GetUnforgeableHolder(JSObject* aGlobal, prototypes::ID aId)
 {
-  JS::Heap<JSObject*>* protoAndIfaceArray = GetProtoAndIfaceArray(aGlobal);
+  ProtoAndIfaceArray& protoAndIfaceArray = *GetProtoAndIfaceArray(aGlobal);
   JSObject* interfaceProto = protoAndIfaceArray[aId];
   return &js::GetReservedSlot(interfaceProto,
                               DOM_INTERFACE_PROTO_SLOTS_BASE).toObject();
@@ -2273,6 +2292,9 @@ ThreadsafeCheckIsChrome(JSContext* aCx, JSObject* aObj);
 void
 TraceGlobal(JSTracer* aTrc, JSObject* aObj);
 
+void
+FinalizeGlobal(JSFreeOp* aFop, JSObject* aObj);
+
 bool
 ResolveGlobal(JSContext* aCx, JS::Handle<JSObject*> aObj,
               JS::MutableHandle<jsid> aId, unsigned aFlags,
@@ -2322,6 +2344,8 @@ CreateGlobal(JSContext* aCx, T* aObject, nsWrapperCache* aCache,
     NS_WARNING("Failed to set proto");
     return nullptr;
   }
+
+  mozilla::HoldJSObjects(aObject);
 
   return global;
 }

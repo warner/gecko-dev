@@ -144,7 +144,6 @@ private:
     void ConvertDirspecFromVMS(nsCString& fileSpec);
     nsresult BuildStreamConverter(nsIStreamListener** convertStreamListener);
     nsresult SetContentType();
-    nsresult ConvertUTF8PathToCharset(const nsACString &aCharset);
 
     /**
      * This method is called to kick-off the FTP state machine.  mState is
@@ -262,10 +261,6 @@ private:
 
 // These members are used for network per-app metering (bug 855948)
 // Currently, they are only available on gonk.
-public:
-    const static uint64_t NETWORK_STATS_THRESHOLD = 65536;
-
-private:
     uint64_t                           mCountRecv;
 #ifdef MOZ_WIDGET_GONK
     nsCOMPtr<nsINetworkInterface>      mActiveNetwork;

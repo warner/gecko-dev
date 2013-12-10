@@ -73,6 +73,12 @@ JS_GetAnonymousString(JSRuntime *rt)
     return rt->atomState.anonymous;
 }
 
+JS_FRIEND_API(void)
+JS_SetIsWorkerRuntime(JSRuntime *rt)
+{
+    rt->setIsWorkerRuntime();
+}
+
 JS_FRIEND_API(JSObject *)
 JS_FindCompilationScope(JSContext *cx, JSObject *objArg)
 {
@@ -554,6 +560,14 @@ js::GetObjectProto(JSContext *cx, JS::Handle<JSObject*> obj, JS::MutableHandle<J
     return true;
 }
 
+JS_FRIEND_API(bool)
+js::GetOriginalEval(JSContext *cx, HandleObject scope, MutableHandleObject eval)
+{
+    assertSameCompartment(cx, scope);
+    Rooted<GlobalObject *> global(cx, &scope->global());
+    return GlobalObject::getOrCreateEval(cx, global, eval);
+}
+
 JS_FRIEND_API(void)
 js::SetReservedSlotWithBarrier(JSObject *obj, size_t slot, const js::Value &value)
 {
@@ -646,7 +660,7 @@ js::VisitGrayWrapperTargets(Zone *zone, GCThingCallback callback, void *closure)
     JSRuntime *rt = zone->runtimeFromMainThread();
     for (CompartmentsInZoneIter comp(zone); !comp.done(); comp.next()) {
         for (JSCompartment::WrapperEnum e(comp); !e.empty(); e.popFront()) {
-            gc::Cell *thing = e.front().key.wrapped;
+            gc::Cell *thing = e.front().key().wrapped;
             if (!IsInsideNursery(rt, thing) && thing->isMarked(gc::GRAY))
                 callback(closure, thing);
         }
@@ -901,7 +915,7 @@ JS::NotifyDidPaint(JSRuntime *rt)
 JS_FRIEND_API(bool)
 JS::IsIncrementalGCEnabled(JSRuntime *rt)
 {
-    return rt->gcIncrementalEnabled && rt->gcMode == JSGC_MODE_INCREMENTAL;
+    return rt->gcIncrementalEnabled && rt->gcMode() == JSGC_MODE_INCREMENTAL;
 }
 
 JS_FRIEND_API(bool)
@@ -1149,6 +1163,14 @@ JS_FRIEND_API(JSObject *)
 js::GetObjectMetadata(JSObject *obj)
 {
     return obj->getMetadata();
+}
+
+JS_FRIEND_API(void)
+js::UnsafeDefineElement(JSContext *cx, JS::HandleObject obj, uint32_t index, JS::HandleValue value)
+{
+    JS_ASSERT(obj->isNative());
+    JS_ASSERT(index < obj->getDenseInitializedLength());
+    obj->setDenseElementWithType(cx, index, value);
 }
 
 JS_FRIEND_API(bool)

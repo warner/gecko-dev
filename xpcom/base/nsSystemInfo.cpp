@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/Util.h"
+#include "mozilla/ArrayUtils.h"
 
 #include "nsSystemInfo.h"
 #include "prsystem.h"
@@ -17,6 +17,7 @@
 #include <winioctl.h>
 #include "base/scoped_handle_win.h"
 #include "nsAppDirectoryServiceDefs.h"
+#include "nsDirectoryServiceDefs.h"
 #include "nsDirectoryServiceUtils.h"
 #endif
 
@@ -26,6 +27,7 @@
 
 #ifdef MOZ_WIDGET_ANDROID
 #include "AndroidBridge.h"
+using namespace mozilla::widget::android;
 #endif
 
 #ifdef MOZ_WIDGET_GONK
@@ -40,13 +42,14 @@ NS_EXPORT int android_sdk_version;
 
 #if defined(XP_WIN)
 namespace {
-nsresult GetProfileHDDInfo(nsAutoCString& aModel, nsAutoCString& aRevision)
+nsresult GetHDDInfo(const char* aSpecialDirName, nsAutoCString& aModel,
+                    nsAutoCString& aRevision)
 {
     aModel.Truncate();
     aRevision.Truncate();
 
     nsCOMPtr<nsIFile> profDir;
-    nsresult rv = NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,
+    nsresult rv = NS_GetSpecialDirectory(aSpecialDirName,
                                          getter_AddRefs(profDir));
     NS_ENSURE_SUCCESS(rv, rv);
     nsAutoString profDirPath;
@@ -165,12 +168,28 @@ nsSystemInfo::Init()
       if (PR_GetSystemInfo(items[i].cmd, buf, sizeof(buf)) == PR_SUCCESS) {
         rv = SetPropertyAsACString(NS_ConvertASCIItoUTF16(items[i].name),
                                    nsDependentCString(buf));
-        NS_ENSURE_SUCCESS(rv, rv);
+        if (NS_WARN_IF(NS_FAILED(rv)))
+          return rv;
       }
       else {
         NS_WARNING("PR_GetSystemInfo failed");
       }
     }
+
+#if defined(XP_WIN) && defined(MOZ_METRO)
+    // Create "hasWindowsTouchInterface" property.
+    nsAutoString version;
+    rv = GetPropertyAsAString(NS_LITERAL_STRING("version"), version);
+    NS_ENSURE_SUCCESS(rv, rv);
+    double versionDouble = atof(NS_ConvertUTF16toUTF8(version).get());
+
+    rv = SetPropertyAsBool(NS_ConvertASCIItoUTF16("hasWindowsTouchInterface"),
+      versionDouble >= 6.2);
+    NS_ENSURE_SUCCESS(rv, rv);
+#else
+    rv = SetPropertyAsBool(NS_ConvertASCIItoUTF16("hasWindowsTouchInterface"), false);
+    NS_ENSURE_SUCCESS(rv, rv);
+#endif
 
     // Additional informations not available through PR_GetSystemInfo.
     SetInt32Property(NS_LITERAL_STRING("pagesize"), PR_GetPageSize());
@@ -182,7 +201,8 @@ nsSystemInfo::Init()
     for (uint32_t i = 0; i < ArrayLength(cpuPropItems); i++) {
         rv = SetPropertyAsBool(NS_ConvertASCIItoUTF16(cpuPropItems[i].name),
                                cpuPropItems[i].propfun());
-        NS_ENSURE_SUCCESS(rv, rv);
+        if (NS_WARN_IF(NS_FAILED(rv)))
+          return rv;
     }
 
 #ifdef XP_WIN
@@ -191,13 +211,29 @@ nsSystemInfo::Init()
     NS_WARN_IF_FALSE(gotWow64Value, "IsWow64Process failed");
     if (gotWow64Value) {
       rv = SetPropertyAsBool(NS_LITERAL_STRING("isWow64"), !!isWow64);
-      NS_ENSURE_SUCCESS(rv, rv);
+      if (NS_WARN_IF(NS_FAILED(rv)))
+        return rv;
     }
     nsAutoCString hddModel, hddRevision;
-    if (NS_SUCCEEDED(GetProfileHDDInfo(hddModel, hddRevision))) {
+    if (NS_SUCCEEDED(GetHDDInfo(NS_APP_USER_PROFILE_50_DIR, hddModel,
+                                hddRevision))) {
       rv = SetPropertyAsACString(NS_LITERAL_STRING("profileHDDModel"), hddModel);
       NS_ENSURE_SUCCESS(rv, rv);
       rv = SetPropertyAsACString(NS_LITERAL_STRING("profileHDDRevision"),
+                                 hddRevision);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+    if (NS_SUCCEEDED(GetHDDInfo(NS_GRE_DIR, hddModel, hddRevision))) {
+      rv = SetPropertyAsACString(NS_LITERAL_STRING("binHDDModel"), hddModel);
+      NS_ENSURE_SUCCESS(rv, rv);
+      rv = SetPropertyAsACString(NS_LITERAL_STRING("binHDDRevision"),
+                                 hddRevision);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+    if (NS_SUCCEEDED(GetHDDInfo(NS_WIN_WINDOWS_DIR, hddModel, hddRevision))) {
+      rv = SetPropertyAsACString(NS_LITERAL_STRING("winHDDModel"), hddModel);
+      NS_ENSURE_SUCCESS(rv, rv);
+      rv = SetPropertyAsACString(NS_LITERAL_STRING("winHDDRevision"),
                                  hddRevision);
       NS_ENSURE_SUCCESS(rv, rv);
     }
@@ -210,7 +246,8 @@ nsSystemInfo::Init()
       rv = SetPropertyAsACString(NS_LITERAL_STRING("secondaryLibrary"),
                                  nsDependentCString(gtkver));
       PR_smprintf_free(gtkver);
-      NS_ENSURE_SUCCESS(rv, rv);
+      if (NS_WARN_IF(NS_FAILED(rv)))
+        return rv;
     }
 #endif
 
@@ -229,7 +266,7 @@ nsSystemInfo::Init()
         android_sdk_version = version;
         if (version >= 8 && mozilla::AndroidBridge::Bridge()->GetStaticStringField("android/os/Build", "HARDWARE", str))
             SetPropertyAsAString(NS_LITERAL_STRING("hardware"), str);
-        bool isTablet = mozilla::AndroidBridge::Bridge()->IsTablet();
+        bool isTablet = GeckoAppShell::IsTablet();
         SetPropertyAsBool(NS_LITERAL_STRING("tablet"), isTablet);
         // NSPR "version" is the kernel version. For Android we want the Android version.
         // Rename SDK version to version and put the kernel version into kernel_version.
