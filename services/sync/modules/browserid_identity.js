@@ -225,15 +225,18 @@ this.BrowserIDManager.prototype = {
   // the identity module. Returns a Promise.
   initWithLoggedInUser: function() {
     // Get the signed in user from FxAccounts.
-    return this._fxaService.getSignedInUser().then(function (userData) {
-      if (!userData) {
-        this._log.warn("initWithLoggedInUser found no logged in user");
-        return undefined;
-      }
-      // Make a note of the last logged in user.
-      this._account = userData.email;
-      // Fetch a sync token for the logged in user from the token server.
-      return this._refreshTokenForLoggedInUser().then(function (token) {
+    return this._fxaService.getSignedInUser()
+      .then(userData => {
+        if (!userData) {
+          this._log.warn("initWithLoggedInUser found no logged in user");
+          throw new Error("initWithLoggedInUser found no logged in user");
+        }
+        // Make a note of the last logged in user.
+        this._account = userData.email;
+        // Fetch a sync token for the logged in user from the token server.
+        return this._refreshTokenForLoggedInUser();
+      })
+      .then(token => {
         this._token = token;
         // Set the username to be the uid returned by the token server.
         // TODO: check here to see if the uid is different that the current
@@ -241,19 +244,21 @@ this.BrowserIDManager.prototype = {
         // user has sync set up, etc
         this.username = this._token.uid.toString();
 
+        return this._fxaService.getKeys();
+      })
+      .then(userData => {
         // both Jelly and FxAccounts give us kA/kB as hex.
         let kB = Utils.hexToBytes(userData.kB);
         this._syncKeyBundle = deriveKeyBundle(kB);
 
-        // Set the clusterURI for this user based on the endpoint in the token.
-        // This is a bit of a hack, and we should figure out a better way of
-        // distributing it to components that need it.
+        // Set the clusterURI for this user based on the endpoint in the
+        // token. This is a bit of a hack, and we should figure out a better
+        // way of distributing it to components that need it.
         let clusterURI = Services.io.newURI(this._token.endpoint, null, null);
         clusterURI.path = "/";
         this.clusterURL = clusterURI.spec;
         this._log.info("initWithLoggedUser has username " + this.username + ", endpoint is " + this.clusterURL);
-      }.bind(this));
-    }.bind(this));
+      });
   },
 
   // Refresh the sync token for the currently logged in Firefox Accounts user.
@@ -311,7 +316,9 @@ this.BrowserIDManager.prototype = {
     }
 
     let audience = Services.io.newURI(tokenServerURI, null, null).prePath;
-    return this._fxaService.getKeys()
+    // wait until the account email is verified and we know that
+    // getAssertion() will return a real assertion (not null).
+    return this._fxaService.whenVerified(userData)
       .then(() => this._fxaService.getAssertion(audience))
       .then(assertion => getToken(tokenServerURI, assertion))
       .then(token => {

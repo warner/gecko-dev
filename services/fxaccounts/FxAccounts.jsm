@@ -575,6 +575,15 @@ this.FxAccounts.prototype = Object.freeze({
       });
   },
 
+  getKeys: function() {
+    return internal.getKeys();
+  },
+
+  whenVerified: function(userData) {
+    return internal.whenVerified(userData);
+  },
+
+
   /**
    * Sign the current user out.
    *
