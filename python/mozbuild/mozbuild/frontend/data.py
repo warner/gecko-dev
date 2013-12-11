@@ -20,8 +20,12 @@ from __future__ import unicode_literals
 import os
 
 from collections import OrderedDict
-from mozbuild.util import StrictOrderingOnAppendList
-from .sandbox_symbols import compute_final_target
+from mozbuild.util import (
+    shell_quote,
+    StrictOrderingOnAppendList,
+)
+import mozpack.path as mozpath
+from .sandbox_symbols import FinalTargetValue
 
 
 class TreeMetadata(object):
@@ -166,7 +170,7 @@ class XPIDLFile(SandboxDerived):
         SandboxDerived.__init__(self, sandbox)
 
         self.source_path = source
-        self.basename = os.path.basename(source)
+        self.basename = mozpath.basename(source)
         self.module = module
 
 class Defines(SandboxDerived):
@@ -182,10 +186,8 @@ class Defines(SandboxDerived):
         for define, value in self.defines.iteritems():
             if value is True:
                 defstr = define
-            elif type(value) == int:
-                defstr = '%s=%s' % (define, value)
             else:
-                defstr = '%s=\'%s\'' % (define, value)
+                defstr = '%s=%s' % (define, shell_quote(value))
             yield('-D%s' % defstr)
 
 class Exports(SandboxDerived):
@@ -325,6 +327,30 @@ class HostSimpleProgram(BaseProgram):
     """Sandbox container object for each program in HOST_SIMPLE_PROGRAMS"""
 
 
+class LibraryDefinition(SandboxDerived):
+    """Partial definition for a library
+
+    The static_libraries member tracks the list of relative directory and
+    library names of static libraries that are meant to be linked into
+    the library defined by an instance of this class.
+    """
+    __slots__ = (
+        'basename',
+        'static_libraries',
+        'refcount',
+    )
+
+    def __init__(self, sandbox, basename):
+        SandboxDerived.__init__(self, sandbox)
+
+        self.basename = basename
+        self.refcount = 0
+        self.static_libraries = []
+
+    def link_static_lib(self, objdir, basename):
+        self.static_libraries.append((objdir, basename))
+
+
 class TestManifest(SandboxDerived):
     """Represents a manifest file containing information about tests."""
 
@@ -335,6 +361,10 @@ class TestManifest(SandboxDerived):
         # Maps source filename to destination filename. The destination
         # path is relative from the tests root directory.
         'installs',
+
+        # A list of pattern matching installs to perform. Entries are
+        # (base, pattern, dest).
+        'pattern_installs',
 
         # Where all files for this manifest flavor are installed in the unified
         # test package directory.
@@ -368,13 +398,14 @@ class TestManifest(SandboxDerived):
         SandboxDerived.__init__(self, sandbox)
 
         self.path = path
-        self.directory = os.path.dirname(path)
+        self.directory = mozpath.dirname(path)
         self.manifest = manifest
         self.flavor = flavor
         self.install_prefix = install_prefix
         self.manifest_relpath = relpath
         self.dupe_manifest = dupe_manifest
         self.installs = {}
+        self.pattern_installs = []
         self.tests = []
         self.external_installs = set()
 
@@ -474,6 +505,6 @@ class InstallationTarget(SandboxDerived):
         """Returns whether or not the target is not derived from the default
         given xpiname and subdir."""
 
-        return compute_final_target(dict(
+        return FinalTargetValue(dict(
             XPI_NAME=self.xpiname,
             DIST_SUBDIR=self.subdir)) == self.target

@@ -6,9 +6,9 @@
 
 #include "nsLayoutUtils.h"
 
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Util.h"
 #include "nsPresContext.h"
 #include "nsIContent.h"
 #include "nsIDOMHTMLDocument.h"
@@ -128,7 +128,7 @@ static ContentMap& GetContentMap() {
 // When the pref "layout.css.sticky.enabled" changes, this function is invoked
 // to let us update kPositionKTable, to selectively disable or restore the
 // entry for "sticky" in that table.
-static int
+static void
 StickyEnabledPrefChangeCallback(const char* aPrefName, void* aClosure)
 {
   MOZ_ASSERT(strncmp(aPrefName, STICKY_ENABLED_PREF_NAME,
@@ -156,14 +156,12 @@ StickyEnabledPrefChangeCallback(const char* aPrefName, void* aClosure)
   // depending on whether the sticky pref is enabled vs. disabled.
   nsCSSProps::kPositionKTable[sIndexOfStickyInPositionTable] =
     isStickyEnabled ? eCSSKeyword_sticky : eCSSKeyword_UNKNOWN;
-
-  return 0;
 }
 
 // When the pref "layout.css.text-align-true-value.enabled" changes, this
 // function is called to let us update kTextAlignKTable & kTextAlignLastKTable,
 // to selectively disable or restore the entries for "true" in those tables.
-static int
+static void
 TextAlignTrueEnabledPrefChangeCallback(const char* aPrefName, void* aClosure)
 {
   NS_ASSERTION(strcmp(aPrefName, TEXT_ALIGN_TRUE_ENABLED_PREF_NAME) == 0,
@@ -195,8 +193,6 @@ TextAlignTrueEnabledPrefChangeCallback(const char* aPrefName, void* aClosure)
   MOZ_ASSERT(sIndexOfTrueInTextAlignLastTable >= 0);
   nsCSSProps::kTextAlignLastKTable[sIndexOfTrueInTextAlignLastTable] =
     isTextAlignTrueEnabled ? eCSSKeyword_true : eCSSKeyword_UNKNOWN;
-
-  return 0;
 }
 
 template <class AnimationsOrTransitions>
@@ -528,22 +524,12 @@ nsLayoutUtils::FindIDFor(const nsIContent* aContent, ViewID* aOutViewId)
 }
 
 ViewID
-nsLayoutUtils::FindOrCreateIDFor(nsIContent* aContent, bool aRoot)
+nsLayoutUtils::FindOrCreateIDFor(nsIContent* aContent)
 {
   ViewID scrollId;
 
   if (!FindIDFor(aContent, &scrollId)) {
-    scrollId = aRoot ? FrameMetrics::ROOT_SCROLL_ID : sScrollIdCounter++;
-    if (aRoot) {
-      // We are possibly replacing the old ROOT_SCROLL_ID content with a new one, so
-      // we should clear the property on the old content if there is one. Otherwise when
-      // that content is destroyed it will clear its property list and clobber ROOT_SCROLL_ID.
-      nsIContent* oldRoot;
-      bool oldExists = GetContentMap().Get(scrollId, &oldRoot);
-      if (oldExists) {
-        oldRoot->DeleteProperty(nsGkAtoms::RemoteId);
-      }
-    }
+    scrollId = sScrollIdCounter++;
     aContent->SetProperty(nsGkAtoms::RemoteId, new ViewID(scrollId),
                           DestroyViewID);
     GetContentMap().Put(scrollId, aContent);
@@ -1198,9 +1184,101 @@ nsLayoutUtils::GetScrollableFrameFor(const nsIFrame *aScrolledFrame)
   return sf;
 }
 
+/* static */ void
+nsLayoutUtils::SetFixedPositionLayerData(Layer* aLayer,
+                                         const nsIFrame* aViewportFrame,
+                                         nsSize aViewportSize,
+                                         const nsIFrame* aFixedPosFrame,
+                                         const nsIFrame* aReferenceFrame,
+                                         nsPresContext* aPresContext,
+                                         const ContainerLayerParameters& aContainerParameters) {
+  // Find out the rect of the viewport frame relative to the reference frame.
+  // This, in conjunction with the container scale, will correspond to the
+  // coordinate-space of the built layer.
+  float factor = aPresContext->AppUnitsPerDevPixel();
+  nsPoint origin = aViewportFrame->GetOffsetToCrossDoc(aReferenceFrame);
+  LayerRect anchorRect(NSAppUnitsToFloatPixels(origin.x, factor) *
+                         aContainerParameters.mXScale,
+                       NSAppUnitsToFloatPixels(origin.y, factor) *
+                         aContainerParameters.mYScale,
+                       NSAppUnitsToFloatPixels(aViewportSize.width, factor) *
+                         aContainerParameters.mXScale,
+                       NSAppUnitsToFloatPixels(aViewportSize.height, factor) *
+                         aContainerParameters.mYScale);
+
+  // Work out the anchor point for this fixed position layer. We assume that
+  // any positioning set (left/top/right/bottom) indicates that the
+  // corresponding side of its container should be the anchor point,
+  // defaulting to top-left.
+  LayerPoint anchor = anchorRect.TopLeft();
+
+  const nsStylePosition* position = aFixedPosFrame->StylePosition();
+  if (position->mOffset.GetRightUnit() != eStyleUnit_Auto) {
+    if (position->mOffset.GetLeftUnit() != eStyleUnit_Auto) {
+      anchor.x = anchorRect.x + anchorRect.width / 2.f;
+    } else {
+      anchor.x = anchorRect.XMost();
+    }
+  }
+  if (position->mOffset.GetBottomUnit() != eStyleUnit_Auto) {
+    if (position->mOffset.GetTopUnit() != eStyleUnit_Auto) {
+      anchor.y = anchorRect.y + anchorRect.height / 2.f;
+    } else {
+      anchor.y = anchorRect.YMost();
+    }
+  }
+
+  aLayer->SetFixedPositionAnchor(anchor);
+
+  // Also make sure the layer is aware of any fixed position margins that have
+  // been set.
+  nsMargin fixedMargins = aPresContext->PresShell()->GetContentDocumentFixedPositionMargins();
+  LayerMargin fixedLayerMargins(NSAppUnitsToFloatPixels(fixedMargins.top, factor) *
+                                  aContainerParameters.mYScale,
+                                NSAppUnitsToFloatPixels(fixedMargins.right, factor) *
+                                  aContainerParameters.mXScale,
+                                NSAppUnitsToFloatPixels(fixedMargins.bottom, factor) *
+                                  aContainerParameters.mYScale,
+                                NSAppUnitsToFloatPixels(fixedMargins.left, factor) *
+                                  aContainerParameters.mXScale);
+
+  // If the frame is auto-positioned on either axis, set the top/left layer
+  // margins to -1, to indicate to the compositor that this layer is
+  // unaffected by fixed margins.
+  if (position->mOffset.GetLeftUnit() == eStyleUnit_Auto &&
+      position->mOffset.GetRightUnit() == eStyleUnit_Auto) {
+    fixedLayerMargins.left = -1;
+  }
+  if (position->mOffset.GetTopUnit() == eStyleUnit_Auto &&
+      position->mOffset.GetBottomUnit() == eStyleUnit_Auto) {
+    fixedLayerMargins.top = -1;
+  }
+
+  aLayer->SetFixedPositionMargins(fixedLayerMargins);
+}
+
+bool
+nsLayoutUtils::IsFixedPosFrameInDisplayPort(const nsIFrame* aFrame, nsRect* aDisplayPort)
+{
+  // Fixed-pos frames are parented by the viewport frame or the page content frame.
+  // We'll assume that printing/print preview don't have displayports for their
+  // pages!
+  nsIFrame* parent = aFrame->GetParent();
+  if (!parent || parent->GetParent() ||
+      aFrame->StyleDisplay()->mPosition != NS_STYLE_POSITION_FIXED) {
+    return false;
+  }
+  nsIFrame* rootScrollFrame =
+    aFrame->PresContext()->PresShell()->GetRootScrollFrame();
+  // Treat a fixed-pos frame as an animated geometry root if it belongs to
+  // a viewport which has a scrollframe and a displayport.
+  return rootScrollFrame &&
+    nsLayoutUtils::GetDisplayPort(rootScrollFrame->GetContent(), aDisplayPort);
+}
+
 nsIFrame*
-nsLayoutUtils::GetActiveScrolledRootFor(nsIFrame* aFrame,
-                                        const nsIFrame* aStopAtAncestor)
+nsLayoutUtils::GetAnimatedGeometryRootFor(nsIFrame* aFrame,
+                                          const nsIFrame* aStopAtAncestor)
 {
   nsIFrame* f = aFrame;
   nsIFrame* stickyFrame = nullptr;
@@ -1239,24 +1317,28 @@ nsLayoutUtils::GetActiveScrolledRootFor(nsIFrame* aFrame,
         stickyFrame = nullptr;
       }
     }
+    // Fixed-pos frames are parented by the viewport frame, which has no parent
+    if (IsFixedPosFrameInDisplayPort(f)) {
+      return f;
+    }
     f = parent;
   }
   return f;
 }
 
 nsIFrame*
-nsLayoutUtils::GetActiveScrolledRootFor(nsDisplayItem* aItem,
-                                        nsDisplayListBuilder* aBuilder,
-                                        bool* aShouldFixToViewport)
+nsLayoutUtils::GetAnimatedGeometryRootFor(nsDisplayItem* aItem,
+                                          nsDisplayListBuilder* aBuilder)
 {
   nsIFrame* f = aItem->Frame();
-  if (aShouldFixToViewport) {
-    *aShouldFixToViewport = false;
+  if (aItem->GetType() == nsDisplayItem::TYPE_SCROLL_LAYER) {
+    nsDisplayScrollLayer* scrollLayerItem =
+      static_cast<nsDisplayScrollLayer*>(aItem);
+    nsIFrame* scrolledFrame = scrollLayerItem->GetScrolledFrame();
+    return nsLayoutUtils::GetAnimatedGeometryRootFor(scrolledFrame,
+        aBuilder->FindReferenceFrameFor(scrolledFrame));
   }
   if (aItem->ShouldFixToViewport(aBuilder)) {
-    if (aShouldFixToViewport) {
-      *aShouldFixToViewport = true;
-    }
     // Make its active scrolled root be the active scrolled root of
     // the enclosing viewport, since it shouldn't be scrolled by scrolled
     // frames in its document. InvalidateFixedBackgroundFramesFromList in
@@ -1264,25 +1346,10 @@ nsLayoutUtils::GetActiveScrolledRootFor(nsDisplayItem* aItem,
     nsIFrame* viewportFrame =
       nsLayoutUtils::GetClosestFrameOfType(f, nsGkAtoms::viewportFrame);
     NS_ASSERTION(viewportFrame, "no viewport???");
-    return nsLayoutUtils::GetActiveScrolledRootFor(viewportFrame, aBuilder->FindReferenceFrameFor(viewportFrame));
-  } else {
-    return nsLayoutUtils::GetActiveScrolledRootFor(f, aItem->ReferenceFrame());
+    return nsLayoutUtils::GetAnimatedGeometryRootFor(viewportFrame,
+        aBuilder->FindReferenceFrameFor(viewportFrame));
   }
-}
-
-bool
-nsLayoutUtils::IsScrolledByRootContentDocumentDisplayportScrolling(const nsIFrame* aActiveScrolledRoot,
-                                                                   nsDisplayListBuilder* aBuilder)
-{
-  nsPresContext* presContext = aActiveScrolledRoot->PresContext()->
-          GetToplevelContentDocumentPresContext();
-  if (!presContext)
-    return false;
-
-  nsIFrame* rootScrollFrame = presContext->GetPresShell()->GetRootScrollFrame();
-  if (!rootScrollFrame || !nsLayoutUtils::GetDisplayPort(rootScrollFrame->GetContent(), nullptr))
-    return false;
-  return nsLayoutUtils::IsAncestorFrameCrossDoc(rootScrollFrame, aActiveScrolledRoot);
+  return nsLayoutUtils::GetAnimatedGeometryRootFor(f, aItem->ReferenceFrame());
 }
 
 // static
@@ -1398,6 +1465,7 @@ nsLayoutUtils::GetEventCoordinatesRelativeTo(const WidgetEvent* aEvent,
                   aEvent->eventStructType != NS_WHEEL_EVENT &&
                   aEvent->eventStructType != NS_DRAG_EVENT &&
                   aEvent->eventStructType != NS_SIMPLE_GESTURE_EVENT &&
+                  aEvent->eventStructType != NS_POINTER_EVENT &&
                   aEvent->eventStructType != NS_GESTURENOTIFY_EVENT &&
                   aEvent->eventStructType != NS_TOUCH_EVENT &&
                   aEvent->eventStructType != NS_QUERY_CONTENT_EVENT))
@@ -2014,7 +2082,7 @@ nsLayoutUtils::GetFramesForArea(nsIFrame* aFrame, const nsRect& aRect,
 
 #ifdef MOZ_DUMP_PAINTING
   if (gDumpEventList) {
-    fprintf(stdout, "Event handling --- (%d,%d):\n", aRect.x, aRect.y);
+    fprintf_stderr(stderr, "Event handling --- (%d,%d):\n", aRect.x, aRect.y);
     nsFrame::PrintDisplayList(&builder, list);
   }
 #endif
@@ -2082,9 +2150,6 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
 
   nsDisplayListBuilder builder(aFrame, nsDisplayListBuilder::PAINTING,
 		                       !(aFlags & PAINT_HIDE_CARET));
-  if (usingDisplayPort) {
-    builder.SetDisplayPort(displayport);
-  }
 
   nsDisplayList list;
   if (aFlags & PAINT_IN_TRANSFORM) {
@@ -2208,16 +2273,16 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
       string.Append(".html");
       gfxUtils::sDumpPaintFile = fopen(string.BeginReading(), "w");
     } else {
-      gfxUtils::sDumpPaintFile = stdout;
+      gfxUtils::sDumpPaintFile = stderr;
     }
     if (gfxUtils::sDumpPaintingToFile) {
-      fprintf(gfxUtils::sDumpPaintFile, "<html><head><script>var array = {}; function ViewImage(index) { window.location = array[index]; }</script></head><body>");
+      fprintf_stderr(gfxUtils::sDumpPaintFile, "<html><head><script>var array = {}; function ViewImage(index) { window.location = array[index]; }</script></head><body>");
     }
-    fprintf(gfxUtils::sDumpPaintFile, "Painting --- before optimization (dirty %d,%d,%d,%d):\n",
+    fprintf_stderr(gfxUtils::sDumpPaintFile, "Painting --- before optimization (dirty %d,%d,%d,%d):\n",
             dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
     nsFrame::PrintDisplayList(&builder, list, gfxUtils::sDumpPaintFile, gfxUtils::sDumpPaintingToFile);
     if (gfxUtils::sDumpPaintingToFile) {
-      fprintf(gfxUtils::sDumpPaintFile, "<script>");
+      fprintf_stderr(gfxUtils::sDumpPaintFile, "<script>");
     }
   }
 #endif
@@ -2258,12 +2323,12 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
 #ifdef MOZ_DUMP_PAINTING
   if (gfxUtils::sDumpPaintList || gfxUtils::sDumpPainting) {
     if (gfxUtils::sDumpPaintingToFile) {
-      fprintf(gfxUtils::sDumpPaintFile, "</script>");
+      fprintf_stderr(gfxUtils::sDumpPaintFile, "</script>");
     }
-    fprintf(gfxUtils::sDumpPaintFile, "Painting --- after optimization:\n");
+    fprintf_stderr(gfxUtils::sDumpPaintFile, "Painting --- after optimization:\n");
     nsFrame::PrintDisplayList(&builder, list, gfxUtils::sDumpPaintFile, gfxUtils::sDumpPaintingToFile);
 
-    fprintf(gfxUtils::sDumpPaintFile, "Painting --- retained layer tree:\n");
+    fprintf_stderr(gfxUtils::sDumpPaintFile, "Painting --- retained layer tree:\n");
     nsIWidget* widget = aFrame->GetNearestWidget();
     if (widget) {
       nsRefPtr<LayerManager> layerManager = widget->GetLayerManager();
@@ -2409,24 +2474,32 @@ nsLayoutUtils::GetAllInFlowBoxes(nsIFrame* aFrame, BoxCallback* aCallback)
 }
 
 struct BoxToRect : public nsLayoutUtils::BoxCallback {
-  typedef nsSize (*GetRectFromFrameFun)(nsIFrame*);
-
   nsIFrame* mRelativeTo;
   nsLayoutUtils::RectCallback* mCallback;
   uint32_t mFlags;
-  GetRectFromFrameFun mRectFromFrame;
 
   BoxToRect(nsIFrame* aRelativeTo, nsLayoutUtils::RectCallback* aCallback,
-            uint32_t aFlags, GetRectFromFrameFun aRectFromFrame)
-    : mRelativeTo(aRelativeTo), mCallback(aCallback), mFlags(aFlags),
-      mRectFromFrame(aRectFromFrame) {}
+            uint32_t aFlags)
+    : mRelativeTo(aRelativeTo), mCallback(aCallback), mFlags(aFlags) {}
 
   virtual void AddBox(nsIFrame* aFrame) {
     nsRect r;
     nsIFrame* outer = nsSVGUtils::GetOuterSVGFrameAndCoveredRegion(aFrame, &r);
     if (!outer) {
       outer = aFrame;
-      r = nsRect(nsPoint(0, 0), mRectFromFrame(aFrame));
+      switch (mFlags & nsLayoutUtils::RECTS_WHICH_BOX_MASK) {
+        case nsLayoutUtils::RECTS_USE_CONTENT_BOX:
+          r = aFrame->GetContentRectRelativeToSelf();
+          break;
+        case nsLayoutUtils::RECTS_USE_PADDING_BOX:
+          r = aFrame->GetPaddingRectRelativeToSelf();
+          break;
+        case nsLayoutUtils::RECTS_USE_MARGIN_BOX:
+          r = aFrame->GetMarginRectRelativeToSelf();
+          break;
+        default: // Use the border box
+          r = aFrame->GetRectRelativeToSelf();
+      }
     }
     if (mFlags & nsLayoutUtils::RECTS_ACCOUNT_FOR_TRANSFORMS) {
       r = nsLayoutUtils::TransformFrameRectToAncestor(outer, r, mRelativeTo);
@@ -2437,17 +2510,11 @@ struct BoxToRect : public nsLayoutUtils::BoxCallback {
   }
 };
 
-static nsSize
-GetFrameBorderSize(nsIFrame* aFrame)
-{
-  return aFrame->GetSize();
-}
-
 void
 nsLayoutUtils::GetAllInFlowRects(nsIFrame* aFrame, nsIFrame* aRelativeTo,
                                  RectCallback* aCallback, uint32_t aFlags)
 {
-  BoxToRect converter(aRelativeTo, aCallback, aFlags, &GetFrameBorderSize);
+  BoxToRect converter(aRelativeTo, aCallback, aFlags);
   GetAllInFlowBoxes(aFrame, &converter);
 }
 
@@ -2530,7 +2597,9 @@ nsLayoutUtils::GetFontMetricsForStyleContext(nsStyleContext* aStyleContext,
                                              float aInflation)
 {
   // pass the user font set object into the device context to pass along to CreateFontGroup
-  gfxUserFontSet* fs = aStyleContext->PresContext()->GetUserFontSet();
+  nsPresContext* pc = aStyleContext->PresContext();
+  gfxUserFontSet* fs = pc->GetUserFontSet();
+  gfxTextPerfMetrics* tp = pc->GetTextPerfMetrics();
 
   nsFont font = aStyleContext->StyleFont()->mFont;
   // We need to not run font.size through floats when it's large since
@@ -2539,9 +2608,9 @@ nsLayoutUtils::GetFontMetricsForStyleContext(nsStyleContext* aStyleContext,
   if (aInflation != 1.0f) {
     font.size = NSToCoordRound(font.size * aInflation);
   }
-  return aStyleContext->PresContext()->DeviceContext()->GetMetricsFor(
+  return pc->DeviceContext()->GetMetricsFor(
                   font, aStyleContext->StyleFont()->mLanguage,
-                  fs, *aFontMetrics);
+                  fs, tp, *aFontMetrics);
 }
 
 nsIFrame*
@@ -2878,9 +2947,9 @@ nsLayoutUtils::IntrinsicForContainer(nsRenderingContext *aRenderingContext,
   NS_PRECONDITION(aType == MIN_WIDTH || aType == PREF_WIDTH, "bad type");
 
 #ifdef DEBUG_INTRINSIC_WIDTH
-  nsFrame::IndentBy(stdout, gNoiseIndent);
-  static_cast<nsFrame*>(aFrame)->ListTag(stdout);
-  printf(" %s intrinsic width for container:\n",
+  nsFrame::IndentBy(stderr, gNoiseIndent);
+  static_cast<nsFrame*>(aFrame)->ListTag(stderr);
+  printf_stderr(" %s intrinsic width for container:\n",
          aType == MIN_WIDTH ? "min" : "pref");
 #endif
 
@@ -2938,9 +3007,9 @@ nsLayoutUtils::IntrinsicForContainer(nsRenderingContext *aRenderingContext,
       result = aFrame->GetPrefWidth(aRenderingContext);
 #ifdef DEBUG_INTRINSIC_WIDTH
     --gNoiseIndent;
-    nsFrame::IndentBy(stdout, gNoiseIndent);
-    static_cast<nsFrame*>(aFrame)->ListTag(stdout);
-    printf(" %s intrinsic width from frame is %d.\n",
+    nsFrame::IndentBy(stderr, gNoiseIndent);
+    static_cast<nsFrame*>(aFrame)->ListTag(stderr);
+    printf_stderr(" %s intrinsic width from frame is %d.\n",
            aType == MIN_WIDTH ? "min" : "pref", result);
 #endif
 
@@ -3127,9 +3196,9 @@ nsLayoutUtils::IntrinsicForContainer(nsRenderingContext *aRenderingContext,
   }
 
 #ifdef DEBUG_INTRINSIC_WIDTH
-  nsFrame::IndentBy(stdout, gNoiseIndent);
-  static_cast<nsFrame*>(aFrame)->ListTag(stdout);
-  printf(" %s intrinsic width for container is %d twips.\n",
+  nsFrame::IndentBy(stderr, gNoiseIndent);
+  static_cast<nsFrame*>(aFrame)->ListTag(stderr);
+  printf_stderr(" %s intrinsic width for container is %d twips.\n",
          aType == MIN_WIDTH ? "min" : "pref", result);
 #endif
 
@@ -3651,24 +3720,21 @@ nsLayoutUtils::GetSnappedBaselineY(nsIFrame* aFrame, gfxContext* aContext,
 }
 
 void
-nsLayoutUtils::DrawString(const nsIFrame*      aFrame,
-                          nsRenderingContext* aContext,
-                          const PRUnichar*     aString,
-                          int32_t              aLength,
-                          nsPoint              aPoint,
-                          uint8_t              aDirection)
+nsLayoutUtils::DrawString(const nsIFrame*       aFrame,
+                          nsRenderingContext*   aContext,
+                          const PRUnichar*      aString,
+                          int32_t               aLength,
+                          nsPoint               aPoint,
+                          nsStyleContext*       aStyleContext)
 {
 #ifdef IBMBIDI
   nsresult rv = NS_ERROR_FAILURE;
   nsPresContext* presContext = aFrame->PresContext();
   if (presContext->BidiEnabled()) {
-    if (aDirection == NS_STYLE_DIRECTION_INHERIT) {
-      aDirection = aFrame->StyleVisibility()->mDirection;
-    }
-    nsBidiDirection direction =
-      (NS_STYLE_DIRECTION_RTL == aDirection) ?
-      NSBIDI_RTL : NSBIDI_LTR;
-    rv = nsBidiPresUtils::RenderText(aString, aLength, direction,
+    nsBidiLevel level =
+      nsBidiPresUtils::BidiLevelFromStyle(aStyleContext ?
+                                          aStyleContext : aFrame->StyleContext());
+    rv = nsBidiPresUtils::RenderText(aString, aLength, level,
                                      presContext, *aContext, *aContext,
                                      aPoint.x, aPoint.y);
   }
@@ -3689,12 +3755,10 @@ nsLayoutUtils::GetStringWidth(const nsIFrame*      aFrame,
 #ifdef IBMBIDI
   nsPresContext* presContext = aFrame->PresContext();
   if (presContext->BidiEnabled()) {
-    const nsStyleVisibility* vis = aFrame->StyleVisibility();
-    nsBidiDirection direction =
-      (NS_STYLE_DIRECTION_RTL == vis->mDirection) ?
-      NSBIDI_RTL : NSBIDI_LTR;
+    nsBidiLevel level =
+      nsBidiPresUtils::BidiLevelFromStyle(aFrame->StyleContext());
     return nsBidiPresUtils::MeasureTextWidth(aString, aLength,
-                                             direction, presContext, *aContext);
+                                             level, presContext, *aContext);
   }
 #endif // IBMBIDI
   aContext->SetTextRunRTL(false);

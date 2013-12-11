@@ -4,17 +4,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-if CONFIG['MOZ_METRO'] and CONFIG['OS_ARCH'] == 'WINNT':
-    DIRS += ['winvccorlib']
-
-MODULE = 'libxul'
-
-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
-    # This is going to be a framework named "XUL", not an ordinary library named
-    # "libxul.dylib"
-    LIBRARY_NAME = 'XUL'
-else:
-    LIBRARY_NAME = 'xul'
+LIBRARY_NAME = 'xul'
 
 SOURCES += [
     'nsStaticXULComponents.cpp',
@@ -25,4 +15,8 @@ if CONFIG['OS_ARCH'] == 'WINNT':
         'nsDllMain.cpp',
     ]
 
+FAIL_ON_WARNINGS = True
+
 MSVC_ENABLE_PGO = True
+
+FORCE_SHARED_LIB = True

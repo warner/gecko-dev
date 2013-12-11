@@ -309,10 +309,7 @@ XPCShellEnvironment::ProcessFile(JSContext *cx,
     if (forceTTY) {
         file = stdin;
     }
-    else
-#ifdef HAVE_ISATTY
-    if (!isatty(fileno(file)))
-#endif
+    else if (!isatty(fileno(file)))
     {
         /*
          * It's not interactive - just execute it.
@@ -373,9 +370,10 @@ XPCShellEnvironment::ProcessFile(JSContext *cx,
 
         /* Clear any pending exception from previous failed compiles.  */
         JS_ClearPendingException(cx);
-        script =
-            JS_CompileScriptForPrincipals(cx, obj, env->GetPrincipal(), buffer,
-                                          strlen(buffer), "typein", startline);
+        JS::CompileOptions options(cx);
+        options.setFileAndLine("typein", startline)
+               .setPrincipals(env->GetPrincipal());
+        script = JS_CompileScript(cx, obj, buffer, strlen(buffer), options);
         if (script) {
             JSErrorReporter older;
 
@@ -474,11 +472,9 @@ XPCShellEnvironment::Init()
 {
     nsresult rv;
 
-#ifdef HAVE_SETBUF
     // unbuffer stdout so that output is in the correct order; note that stderr
     // is unbuffered by default
     setbuf(stdout, 0);
-#endif
 
     nsCOMPtr<nsIJSRuntimeService> rtsvc =
         do_GetService("@mozilla.org/js/xpc/RuntimeService;1");
@@ -583,10 +579,11 @@ XPCShellEnvironment::EvaluateString(const nsString& aString,
   JS::Rooted<JSObject*> global(cx, GetGlobalObject());
   JSAutoCompartment ac(cx, global);
 
-  JSScript* script =
-      JS_CompileUCScriptForPrincipals(cx, global, GetPrincipal(),
-                                      aString.get(), aString.Length(),
-                                      "typein", 0);
+  JS::CompileOptions options(cx);
+  options.setFileAndLine("typein", 0)
+         .setPrincipals(GetPrincipal());
+  JSScript* script = JS_CompileUCScript(cx, global, aString.get(),
+                                        aString.Length(), options);
   if (!script) {
      return false;
   }

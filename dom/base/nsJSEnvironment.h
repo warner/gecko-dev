@@ -24,6 +24,7 @@ class nsCycleCollectionNoteRootCallback;
 
 namespace mozilla {
 template <class> class Maybe;
+struct CycleCollectorResults;
 }
 
 // The amount of time we wait between a request to GC (due to leaving
@@ -103,8 +104,10 @@ public:
   // If aExtraForgetSkippableCalls is -1, forgetSkippable won't be
   // called even if the previous collection was GC.
   static void CycleCollectNow(nsICycleCollectorListener *aListener = nullptr,
-                              int32_t aExtraForgetSkippableCalls = 0,
-                              bool aManuallyTriggered = true);
+                              int32_t aExtraForgetSkippableCalls = 0);
+  static void ScheduledCycleCollectNow();
+  static void BeginCycleCollectionCallback();
+  static void EndCycleCollectionCallback(mozilla::CycleCollectorResults &aResults);
 
   static void PokeGC(JS::gcreason::Reason aReason, int aDelay = 0);
   static void KillGCTimer();
@@ -178,7 +181,7 @@ private:
   // context does. It is eventually collected by the cycle collector.
   nsCOMPtr<nsIScriptGlobalObject> mGlobalObjectRef;
 
-  static int JSOptionChangedCallback(const char *pref, void *data);
+  static void JSOptionChangedCallback(const char *pref, void *data);
 
   static bool DOMOperationCallback(JSContext *cx);
 };

@@ -11,6 +11,8 @@ Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/commonjs/sdk/core/promise.js");
 
+XPCOMUtils.defineLazyModuleGetter(this, "AsyncShutdown",
+  "resource://gre/modules/AsyncShutdown.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "DeferredTask",
   "resource://gre/modules/DeferredTask.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "OS",
@@ -1472,14 +1474,19 @@ Engine.prototype = {
       return;
     }
 
-    // Check to see if this is a duplicate engine. If we're confirming the
-    // engine load, then we display a "this is a duplicate engine" prompt,
-    // otherwise we fail silently.
+    // Check that when adding a new engine (e.g., not updating an
+    // existing one), a duplicate engine does not already exist.
     if (!engineToUpdate) {
       if (Services.search.getEngineByName(aEngine.name)) {
-        promptError({ error: "error_duplicate_engine_msg",
-                      title: "error_invalid_engine_title"
-                    }, Ci.nsISearchInstallCallback.ERROR_DUPLICATE_ENGINE);
+        // If we're confirming the engine load, then display a "this is a
+        // duplicate engine" prompt; otherwise, fail silently.
+        if (aEngine._confirm) {
+          promptError({ error: "error_duplicate_engine_msg",
+                        title: "error_invalid_engine_title"
+                      }, Ci.nsISearchInstallCallback.ERROR_DUPLICATE_ENGINE);
+        } else {
+          onError(Ci.nsISearchInstallCallback.ERROR_DUPLICATE_ENGINE);
+        }
         LOG("_onLoad: duplicate engine found, bailing");
         return;
       }
@@ -2650,7 +2657,7 @@ Engine.prototype = {
     url.addParam(aName, aValue);
 
     // Serialize the changes to file lazily
-    this.lazySerializeTask.start();
+    this.lazySerializeTask.arm();
   },
 
 #ifdef ANDROID
@@ -3403,7 +3410,7 @@ SearchService.prototype = {
           addedEngine = new Engine(file, SEARCH_DATA_XML, !isWritable);
           yield checkForSyncCompletion(addedEngine._asyncInitFromFile());
         } catch (ex if ex.result != Cr.NS_ERROR_ALREADY_INITIALIZED) {
-          LOG("_asyncLoadEnginesFromDir: Failed to load " + file.path + "!\n" + ex);
+          LOG("_asyncLoadEnginesFromDir: Failed to load " + osfile.path + "!\n" + ex);
           continue;
         }
         engines.push(addedEngine);
@@ -3866,7 +3873,8 @@ SearchService.prototype = {
     engine._initFromMetadata(aName, aIconURL, aAlias, aDescription,
                              aMethod, aTemplate);
     this._addEngineToStore(engine);
-    this.batchTask.start();
+    this.batchTask.disarm();
+    this.batchTask.arm();
   },
 
   addEngine: function SRCH_SVC_addEngine(aEngineURL, aDataType, aIconURL,
@@ -3929,9 +3937,10 @@ SearchService.prototype = {
       engineToRemove.hidden = true;
       engineToRemove.alias = null;
     } else {
-      // Cancel the serialized task if it's running
+      // Cancel the serialized task if it's pending.  Since the task is a
+      // synchronous function, we don't need to wait on the "finalize" method.
       if (engineToRemove._lazySerializeTask) {
-        engineToRemove._lazySerializeTask.cancel();
+        engineToRemove._lazySerializeTask.disarm();
         engineToRemove._lazySerializeTask = null;
       }
 
@@ -4130,22 +4139,19 @@ SearchService.prototype = {
               LOG("nsSearchService::observe: setting current");
               this.currentEngine = aEngine;
             }
-            this.batchTask.start();
+            this.batchTask.disarm();
+            this.batchTask.arm();
             break;
           case SEARCH_ENGINE_CHANGED:
           case SEARCH_ENGINE_REMOVED:
-            this.batchTask.start();
+            this.batchTask.disarm();
+            this.batchTask.arm();
             break;
         }
         break;
 
       case QUIT_APPLICATION_TOPIC:
         this._removeObservers();
-        if (this._batchTask) {
-          // Flush to disk immediately
-          this._batchTask.flush();
-        }
-        engineMetadataService.flush();
         break;
 
       case "nsPref:changed":
@@ -4204,6 +4210,16 @@ SearchService.prototype = {
     Services.obs.addObserver(this, QUIT_APPLICATION_TOPIC, false);
     Services.prefs.addObserver(BROWSER_SEARCH_PREF + "defaultenginename", this, false);
     Services.prefs.addObserver(BROWSER_SEARCH_PREF + "selectedEngine", this, false);
+
+    AsyncShutdown.profileBeforeChange.addBlocker(
+      "Search service: shutting down",
+      () => Task.spawn(function () {
+        if (this._batchTask) {
+          yield this._batchTask.finalize().then(null, Cu.reportError);
+        }
+        yield engineMetadataService.finalize();
+      }.bind(this))
+    );
   },
 
   _removeObservers: function SRCH_SVC_removeObservers() {
@@ -4423,11 +4439,8 @@ var engineMetadataService = {
   /**
    * Flush any waiting write.
    */
-  flush: function epsFlush() {
-    if (this._lazyWriter) {
-      this._lazyWriter.flush();
-    }
-  },
+  finalize: function () this._lazyWriter ? this._lazyWriter.finalize()
+                                         : Promise.resolve(),
 
   /**
    * Commit changes to disk, asynchronously.
@@ -4464,12 +4477,14 @@ var engineMetadataService = {
             LOG("metadata writeCommit: done");
           }
         );
-        TaskUtils.captureErrors(promise);
+        // Use our error logging instead of the default one.
+        return TaskUtils.captureErrors(promise).then(null, () => {});
       }
       this._lazyWriter = new DeferredTask(writeCommit, LAZY_SERIALIZE_DELAY);
     }
     LOG("metadata _commit: (re)setting timer");
-    this._lazyWriter.start();
+    this._lazyWriter.disarm();
+    this._lazyWriter.arm();
   },
   _lazyWriter: null
 };

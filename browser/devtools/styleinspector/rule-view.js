@@ -22,6 +22,8 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 
+const PREF_ORIG_SOURCES = "devtools.styleeditor.source-maps-enabled";
+
 /**
  * These regular expressions are adapted from firebug's css.js, and are
  * used to parse CSSStyleDeclaration's cssText attribute.
@@ -485,6 +487,33 @@ Rule.prototype = {
   get ruleLine()
   {
     return this.domRule ? this.domRule.line : null;
+  },
+
+  /**
+   * The rule's column within a stylesheet
+   */
+  get ruleColumn()
+  {
+    return this.domRule ? this.domRule.column : null;
+  },
+
+  /**
+   * Get display name for this rule based on the original source
+   * for this rule's style sheet.
+   *
+   * @return {Promise}
+   *         Promise which resolves with location as a string.
+   */
+  getOriginalSourceString: function Rule_getOriginalSourceString()
+  {
+    if (this._originalSourceString) {
+      return promise.resolve(this._originalSourceString);
+    }
+    return this.domRule.getOriginalLocation().then(({href, line}) => {
+      let string = CssLogic.shortSource({href: href}) + ":" + line;
+      this._originalSourceString = string;
+      return string;
+    });
   },
 
   /**
@@ -1125,23 +1154,17 @@ CssRuleView.prototype = {
    * prepare some content for the tooltip
    */
   _buildTooltipContent: function(target) {
-    let isValueWithImage = target.classList.contains("ruleview-propertyvalue") &&
-      target.querySelector(".theme-link");
-
     let isImageHref = target.classList.contains("theme-link") &&
       target.parentNode.classList.contains("ruleview-propertyvalue");
-    if (isImageHref) {
-      target = target.parentNode;
-    }
 
     // If the inplace-editor is visible or if this is not a background image
     // don't show the tooltip
-    if (!isImageHref && !isValueWithImage) {
+    if (!isImageHref) {
       return false;
     }
 
     // Retrieve the TextProperty for the hovered element
-    let property = target.textProperty;
+    let property = target.parentNode.textProperty;
     let href = property.rule.domRule.href;
 
     // Fill some content
@@ -1592,6 +1615,14 @@ RuleEditor.prototype = {
     sourceLabel.setAttribute("tooltiptext", this.rule.title);
     source.appendChild(sourceLabel);
 
+    let showOrig = Services.prefs.getBoolPref(PREF_ORIG_SOURCES);
+    if (showOrig && this.rule.domRule.type != ELEMENT_STYLE) {
+      this.rule.getOriginalSourceString().then((string) => {
+        sourceLabel.setAttribute("value", string);
+        sourceLabel.setAttribute("tooltiptext", string);
+      })
+    }
+
     let code = createChild(this.element, "div", {
       class: "ruleview-code"
     });
@@ -2029,6 +2060,7 @@ TextPropertyEditor.prototype = {
     let outputParser = this.ruleEditor.ruleView._outputParser;
     let frag = outputParser.parseCssProperty(name, val, {
       colorSwatchClass: swatchClass,
+      colorClass: "ruleview-color",
       defaultColorType: !propDirty,
       urlClass: "theme-link",
       baseURI: this.sheetURI
@@ -2452,7 +2484,7 @@ XPCOMUtils.defineLazyGetter(this, "clipboardHelper", function() {
 
 XPCOMUtils.defineLazyGetter(this, "_strings", function() {
   return Services.strings.createBundle(
-    "chrome://browser/locale/devtools/styleinspector.properties");
+    "chrome://global/locale/devtools/styleinspector.properties");
 });
 
 XPCOMUtils.defineLazyGetter(this, "domUtils", function() {

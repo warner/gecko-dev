@@ -25,7 +25,6 @@ namespace JS {
     D(TOO_MUCH_MALLOC)                          \
     D(ALLOC_TRIGGER)                            \
     D(DEBUG_GC)                                 \
-    D(DEBUG_MODE_GC)                            \
     D(TRANSPLANT)                               \
     D(RESET)                                    \
     D(OUT_OF_NURSERY)                           \
@@ -215,7 +214,7 @@ GetGCNumber();
 
 class JS_PUBLIC_API(AutoAssertNoGC)
 {
-#ifdef DEBUG
+#ifdef JS_DEBUG
     JSRuntime *runtime;
     size_t gcNumber;
 

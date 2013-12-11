@@ -9,6 +9,7 @@
 #include "mozilla/DebugOnly.h"
 
 #include "jit/IonCode.h"
+#include "js/SliceBudget.h"
 #include "vm/ArgumentsObject.h"
 #include "vm/ScopeObject.h"
 #include "vm/Shape.h"
@@ -151,7 +152,7 @@ CheckMarkedThing(JSTracer *trc, T *thing)
                  thing->zone()->isCollecting() || rt->isAtomsZone(thing->zone()));
 
     JS_ASSERT_IF(IS_GC_MARKING_TRACER(trc) && AsGCMarker(trc)->getMarkColor() == GRAY,
-                 thing->zone()->isGCMarkingGray() || rt->isAtomsZone(thing->zone()));
+                 !thing->zone()->isGCMarkingBlack() || rt->isAtomsZone(thing->zone()));
 
     /*
      * Try to assert that the thing is allocated.  This is complicated by the
@@ -1270,7 +1271,7 @@ struct SlotArrayLayout
 void
 GCMarker::saveValueRanges()
 {
-    for (uintptr_t *p = stack.tos; p > stack.stack; ) {
+    for (uintptr_t *p = stack.tos_; p > stack.stack_; ) {
         uintptr_t tag = *--p & StackTagMask;
         if (tag == ValueArrayTag) {
             *p &= ~StackTagMask;
@@ -1474,7 +1475,7 @@ GCMarker::processMarkStackTop(SliceBudget &budget)
         /* Call the trace hook if necessary. */
         const Class *clasp = type->clasp;
         if (clasp->trace) {
-            JS_ASSERT_IF(runtime->gcMode == JSGC_MODE_INCREMENTAL &&
+            JS_ASSERT_IF(runtime->gcMode() == JSGC_MODE_INCREMENTAL &&
                          runtime->gcIncrementalEnabled,
                          clasp->flags & JSCLASS_IMPLEMENTS_BARRIERS);
             clasp->trace(this, obj);

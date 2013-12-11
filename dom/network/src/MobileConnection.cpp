@@ -24,7 +24,7 @@
 
 using namespace mozilla::dom::network;
 
-class MobileConnection::Listener : public nsIMobileConnectionListener
+class MobileConnection::Listener MOZ_FINAL : public nsIMobileConnectionListener
 {
   MobileConnection* mMobileConnection;
 
@@ -78,6 +78,7 @@ NS_IMPL_EVENT_HANDLER(MobileConnection, cfstatechange)
 NS_IMPL_EVENT_HANDLER(MobileConnection, emergencycbmodechange)
 NS_IMPL_EVENT_HANDLER(MobileConnection, otastatuschange)
 NS_IMPL_EVENT_HANDLER(MobileConnection, iccchange)
+NS_IMPL_EVENT_HANDLER(MobileConnection, radiostatechange)
 
 MobileConnection::MobileConnection(uint32_t aClientId)
 : mClientId(aClientId)
@@ -212,6 +213,17 @@ MobileConnection::GetNetworkSelectionMode(nsAString& aNetworkSelectionMode)
 }
 
 NS_IMETHODIMP
+MobileConnection::GetRadioState(nsAString& aRadioState)
+{
+  aRadioState.SetIsVoid(true);
+
+  if (!mProvider || !CheckPermission("mobileconnection")) {
+     return NS_OK;
+  }
+  return mProvider->GetRadioState(mClientId, aRadioState);
+}
+
+NS_IMETHODIMP
 MobileConnection::GetNetworks(nsIDOMDOMRequest** aRequest)
 {
   *aRequest = nullptr;
@@ -257,6 +269,39 @@ MobileConnection::SelectNetworkAutomatically(nsIDOMDOMRequest** aRequest)
   }
 
   return mProvider->SelectNetworkAutomatically(mClientId, GetOwner(), aRequest);
+}
+
+NS_IMETHODIMP
+MobileConnection::SetPreferredNetworkType(const nsAString& aType,
+                                          nsIDOMDOMRequest** aDomRequest)
+{
+  *aDomRequest = nullptr;
+
+  if (!CheckPermission("mobileconnection")) {
+    return NS_OK;
+  }
+
+  if (!mProvider) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return mProvider->SetPreferredNetworkType(mClientId, GetOwner(), aType, aDomRequest);
+}
+
+NS_IMETHODIMP
+MobileConnection::GetPreferredNetworkType(nsIDOMDOMRequest** aDomRequest)
+{
+  *aDomRequest = nullptr;
+
+  if (!CheckPermission("mobileconnection")) {
+    return NS_OK;
+  }
+
+  if (!mProvider) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return mProvider->GetPreferredNetworkType(mClientId, GetOwner(), aDomRequest);
 }
 
 NS_IMETHODIMP
@@ -519,6 +564,23 @@ MobileConnection::ExitEmergencyCbMode(nsIDOMDOMRequest** aRequest)
   return mProvider->ExitEmergencyCbMode(mClientId, GetOwner(), aRequest);
 }
 
+NS_IMETHODIMP
+MobileConnection::SetRadioEnabled(bool aEnabled,
+                                  nsIDOMDOMRequest** aRequest)
+{
+  *aRequest = nullptr;
+
+  if (!CheckPermission("mobileconnection")) {
+    return NS_OK;
+  }
+
+  if (!mProvider) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return mProvider->SetRadioEnabled(mClientId, GetOwner(), aEnabled, aRequest);
+}
+
 // nsIMobileConnectionListener
 
 NS_IMETHODIMP
@@ -653,4 +715,14 @@ MobileConnection::NotifyIccChanged()
   }
 
   return DispatchTrustedEvent(NS_LITERAL_STRING("iccchange"));
+}
+
+NS_IMETHODIMP
+MobileConnection::NotifyRadioStateChanged()
+{
+  if (!CheckPermission("mobileconnection")) {
+    return NS_OK;
+  }
+
+  return DispatchTrustedEvent(NS_LITERAL_STRING("radiostatechange"));
 }

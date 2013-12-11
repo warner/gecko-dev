@@ -28,6 +28,7 @@
 
 #if defined(SPS_OS_android) && !defined(MOZ_WIDGET_GONK)
   #include "AndroidBridge.h"
+  using namespace mozilla::widget::android;
 #endif
 
 mozilla::ThreadLocal<PseudoStack *> tlsPseudoStack;
@@ -675,7 +676,7 @@ void mozilla_sampler_start(int aProfileEntries, double aInterval,
     if (javaInterval < 10) {
       aInterval = 10;
     }
-    mozilla::AndroidBridge::Bridge()->StartJavaProfiling(javaInterval, 1000);
+    GeckoJavaSampler::StartJavaProfiling(javaInterval, 1000);
   }
 #endif
 
@@ -869,6 +870,33 @@ void mozilla_sampler_tracing(const char* aCategory, const char* aInfo,
                              TracingMetadata aMetaData)
 {
   mozilla_sampler_add_marker(aInfo, new ProfilerMarkerTracing(aCategory, aMetaData));
+}
+
+void mozilla_sampler_add_marker(const char *aMarker, ProfilerMarkerPayload *aPayload)
+{
+  // Note that aPayload may be allocated by the caller, so we need to make sure
+  // that we free it at some point.
+  nsAutoPtr<ProfilerMarkerPayload> payload(aPayload);
+
+  if (!stack_key_initialized)
+    return;
+
+  // Don't insert a marker if we're not profiling to avoid
+  // the heap copy (malloc).
+  if (!profiler_is_active()) {
+    return;
+  }
+
+  // Don't add a marker if we don't want to include personal information
+  if (profiler_in_privacy_mode()) {
+    return;
+  }
+
+  PseudoStack *stack = tlsPseudoStack.get();
+  if (!stack) {
+    return;
+  }
+  stack->addMarker(aMarker, payload.forget());
 }
 
 // END externally visible functions

@@ -17,6 +17,10 @@ XPCOMUtils.defineLazyModuleGetter(this, "RecentlyClosedTabsAndWindowsMenuUtils",
 XPCOMUtils.defineLazyServiceGetter(this, "CharsetManager",
                                    "@mozilla.org/charset-converter-manager;1",
                                    "nsICharsetConverterManager");
+XPCOMUtils.defineLazyGetter(this, "BrandBundle", function() {
+  const kBrandBundle = "chrome://branding/locale/brand.properties";
+  return Services.strings.createBundle(kBrandBundle);
+});
 
 const kNSXUL = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 const kPrefCustomizationDebug = "browser.uiCustomization.debug";
@@ -41,13 +45,13 @@ function setAttributes(aNode, aAttrs) {
 function updateCombinedWidgetStyle(aNode, aArea, aModifyAutoclose) {
   let inPanel = (aArea == CustomizableUI.AREA_PANEL);
   let cls = inPanel ? "panel-combined-button" : "toolbarbutton-1";
-  if (!aArea)
-    cls = null;
   let attrs = {class: cls};
   if (aModifyAutoclose) {
     attrs.noautoclose = inPanel ? true : null;
   }
   for (let i = 0, l = aNode.childNodes.length; i < l; ++i) {
+    if (aNode.childNodes[i].localName == "separator")
+      continue;
     setAttributes(aNode.childNodes[i], attrs);
   }
 }
@@ -333,7 +337,9 @@ const CustomizableWidgets = [{
       node.classList.add("toolbaritem-combined-buttons");
       node.classList.add(kWidePanelItemClass);
 
-      buttons.forEach(function(aButton) {
+      buttons.forEach(function(aButton, aIndex) {
+        if (aIndex != 0)
+          node.appendChild(aDocument.createElementNS(kNSXUL, "separator"));
         let btnNode = aDocument.createElementNS(kNSXUL, "toolbarbutton");
         setAttributes(btnNode, aButton);
         if (inPanel)
@@ -342,7 +348,7 @@ const CustomizableWidgets = [{
       });
 
       // The middle node is the 'Reset Zoom' button.
-      let zoomResetButton = node.childNodes[1];
+      let zoomResetButton = node.childNodes[2];
       let window = aDocument.defaultView;
       function updateZoomResetButton() {
         //XXXgijs in some tests we get called very early, and there's no docShell on the
@@ -396,8 +402,8 @@ const CustomizableWidgets = [{
           updateZoomResetButton();
         }.bind(this),
 
-        onWidgetReset: function(aWidgetId) {
-          if (aWidgetId != this.id)
+        onWidgetReset: function(aWidgetNode) {
+          if (aWidgetNode != node)
             return;
           updateCombinedWidgetStyle(node, this.currentArea, true);
           updateZoomResetButton();
@@ -473,11 +479,11 @@ const CustomizableWidgets = [{
       node.classList.add("toolbaritem-combined-buttons");
       node.classList.add(kWidePanelItemClass);
 
-      buttons.forEach(function(aButton) {
+      buttons.forEach(function(aButton, aIndex) {
+        if (aIndex != 0)
+          node.appendChild(aDocument.createElementNS(kNSXUL, "separator"));
         let btnNode = aDocument.createElementNS(kNSXUL, "toolbarbutton");
         setAttributes(btnNode, aButton);
-        if (inPanel)
-          btnNode.setAttribute("tabindex", "0");
         node.appendChild(btnNode);
       });
 
@@ -496,8 +502,8 @@ const CustomizableWidgets = [{
           updateCombinedWidgetStyle(node);
         }.bind(this),
 
-        onWidgetReset: function(aWidgetId) {
-          if (aWidgetId != this.id)
+        onWidgetReset: function(aWidgetNode) {
+          if (aWidgetNode != node)
             return;
           updateCombinedWidgetStyle(node, this.currentArea);
         }.bind(this),
@@ -775,4 +781,36 @@ const CustomizableWidgets = [{
       };
       CustomizableUI.addListener(listener);
     }
+  }, {
+    id: "email-link-button",
+    removable: true,
+    onCommand: function(aEvent) {
+      let win = aEvent.view;
+      win.MailIntegration.sendLinkForWindow(win.content);
+    }
   }];
+
+#ifdef XP_WIN
+#ifdef MOZ_METRO
+if (Services.sysinfo.getProperty("hasWindowsTouchInterface")) {
+  let widgetArgs = {tooltiptext: "switch-to-metro-button2.tooltiptext"};
+  let brandShortName = BrandBundle.GetStringFromName("brandShortName");
+  let metroTooltip = CustomizableUI.getLocalizedProperty(widgetArgs, "tooltiptext",
+                                                         [brandShortName]);
+  CustomizableWidgets.push({
+    id: "switch-to-metro-button",
+    label: "switch-to-metro-button2.label",
+    tooltiptext: metroTooltip,
+    removable: true,
+    defaultArea: CustomizableUI.AREA_PANEL,
+    showInPrivateBrowsing: false, /* See bug 928068 */
+    onCommand: function(aEvent) {
+      let win = aEvent.view;
+      if (win && typeof win.SwitchToMetro == "function") {
+        win.SwitchToMetro();
+      }
+    }
+  });
+}
+#endif
+#endif

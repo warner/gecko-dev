@@ -10,7 +10,7 @@ interface nsIDOMMozMobileConnectionInfo;
 interface nsIDOMMozMobileNetworkInfo;
 interface nsIDOMWindow;
 
-[scriptable, uuid(f02c50d5-9d34-4f24-80eb-527a280e31fa)]
+[scriptable, uuid(5013f5cc-24f9-45dc-ba03-f5dc031a3a6b)]
 interface nsIMobileConnectionListener : nsISupports
 {
   void notifyVoiceChanged();
@@ -28,13 +28,14 @@ interface nsIMobileConnectionListener : nsISupports
                                     in unsigned long timeoutMs);
   void notifyOtaStatusChanged(in DOMString status);
   void notifyIccChanged();
+  void notifyRadioStateChanged();
 };
 
 /**
  * XPCOM component (in the content process) that provides the mobile
  * network information.
  */
-[scriptable, uuid(84278a49-0f05-4585-b3f4-c74882ae5719)]
+[scriptable, uuid(0e027520-dd87-461d-88a6-c3e46369c03c)]
 interface nsIMobileConnectionProvider : nsISupports
 {
   /**
@@ -51,6 +52,7 @@ interface nsIMobileConnectionProvider : nsISupports
   nsIDOMMozMobileConnectionInfo getDataConnectionInfo(in unsigned long clientId);
   DOMString getIccId(in unsigned long clientId);
   DOMString getNetworkSelectionMode(in unsigned long clientId);
+  DOMString getRadioState(in unsigned long clientId);
 
   nsIDOMDOMRequest getNetworks(in unsigned long clientId,
                                in nsIDOMWindow window);
@@ -59,6 +61,12 @@ interface nsIMobileConnectionProvider : nsISupports
                                  in nsIDOMMozMobileNetworkInfo network);
   nsIDOMDOMRequest selectNetworkAutomatically(in unsigned long clientId,
                                               in nsIDOMWindow window);
+
+  nsIDOMDOMRequest setPreferredNetworkType(in unsigned long clientId,
+                                           in nsIDOMWindow window,
+                                           in DOMString type);
+  nsIDOMDOMRequest getPreferredNetworkType(in unsigned long clientId,
+                                           in nsIDOMWindow window);
 
   nsIDOMDOMRequest setRoamingPreference(in unsigned long clientId,
                                         in nsIDOMWindow window,
@@ -109,4 +117,6 @@ interface nsIMobileConnectionProvider : nsISupports
 
   nsIDOMDOMRequest exitEmergencyCbMode(in unsigned long clientId,
                                        in nsIDOMWindow window);
+
+  nsIDOMDOMRequest setRadioEnabled(in unsigned long clientId, in nsIDOMWindow window, in bool enabled);
 };

@@ -210,6 +210,12 @@ private:
 
     uint16_t                        mRestartCount;        // the number of times this transaction has been restarted
     uint32_t                        mCaps;
+    // mCapsToClear holds flags that should be cleared in mCaps, e.g. unset
+    // NS_HTTP_REFRESH_DNS when DNS refresh request has completed to avoid
+    // redundant requests on the network. To deal with raciness, only unsetting
+    // bitfields should be allowed: 'lost races' will thus err on the
+    // conservative side, e.g. by going ahead with a 2nd DNS refresh.
+    uint32_t                        mCapsToClear;
     enum Classifier                 mClassification;
     int32_t                         mPipelinePosition;
     int64_t                         mMaxPipelineObjectSize;
@@ -340,10 +346,6 @@ private:
 
 // These members are used for network per-app metering (bug 746073)
 // Currently, they are only available on gonk.
-public:
-    const static uint64_t NETWORK_STATS_THRESHOLD = 65536;
-
-private:
     uint64_t                           mCountRecv;
     uint64_t                           mCountSent;
     uint32_t                           mAppId;
@@ -351,7 +353,6 @@ private:
     nsMainThreadPtrHandle<nsINetworkInterface> mActiveNetwork;
 #endif
     nsresult                           SaveNetworkStats(bool);
-    void                               GetActiveNetwork();
     void                               CountRecvBytes(uint64_t recvBytes)
     {
         mCountRecv += recvBytes;

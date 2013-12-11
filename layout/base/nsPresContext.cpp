@@ -140,7 +140,7 @@ nsPresContext::IsDOMPaintEventPending()
   return false;
 }
 
-int
+void
 nsPresContext::PrefChangedCallback(const char* aPrefName, void* instance_data)
 {
   nsRefPtr<nsPresContext>  presContext =
@@ -150,7 +150,6 @@ nsPresContext::PrefChangedCallback(const char* aPrefName, void* instance_data)
   if (nullptr != presContext) {
     presContext->PreferenceChanged(aPrefName);
   }
-  return 0;  // PREF_OK
 }
 
 
@@ -234,6 +233,12 @@ nsPresContext::nsPresContext(nsIDocument* aDocument, nsPresContextType aType)
   NS_ASSERTION(mDocument, "Null document");
   mUserFontSet = nullptr;
   mUserFontSetDirty = true;
+
+  // if text perf logging enabled, init stats struct
+  PRLogModuleInfo *log = gfxPlatform::GetLog(eGfxLog_textperf);
+  if (log && PR_LOG_TEST(log, PR_LOG_WARNING)) {
+    mTextPerf = new gfxTextPerfMetrics();
+  }
 
   PR_INIT_CLIST(&mDOMMediaQueryLists);
 }
@@ -958,9 +963,7 @@ nsPresContext::Init(nsDeviceContext* aDeviceContext)
                    "How did we get a presshell?");
 
       // We don't have our container set yet at this point
-      nsCOMPtr<nsISupports> ourContainer = mDocument->GetContainer();
-
-      nsCOMPtr<nsIDocShellTreeItem> ourItem = do_QueryInterface(ourContainer);
+      nsCOMPtr<nsIDocShellTreeItem> ourItem = mDocument->GetDocShell();
       if (ourItem) {
         nsCOMPtr<nsIDocShellTreeItem> parentItem;
         ourItem->GetSameTypeParent(getter_AddRefs(parentItem));

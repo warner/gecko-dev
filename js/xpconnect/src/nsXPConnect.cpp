@@ -515,19 +515,12 @@ nsXPConnect::InitClassesWithNewWrappedGlobal(JSContext * aJSContext,
     MOZ_ASSERT(js::GetObjectClass(global)->flags & JSCLASS_DOM_GLOBAL);
 
     // Init WebIDL binding constructors wanted on all XPConnect globals.
-    // Additional bindings may be created lazily, see BackstagePass::NewResolve.
     //
     // XXX Please do not add any additional classes here without the approval of
     //     the XPConnect module owner.
     if (!TextDecoderBinding::GetConstructorObject(aJSContext, global) ||
         !TextEncoderBinding::GetConstructorObject(aJSContext, global) ||
         !DOMErrorBinding::GetConstructorObject(aJSContext, global)) {
-        return UnexpectedFailure(NS_ERROR_FAILURE);
-    }
-
-    if (nsContentUtils::IsSystemPrincipal(aPrincipal) &&
-        !IndexedDatabaseManager::DefineIndexedDBLazyGetter(aJSContext,
-                                                           global)) {
         return UnexpectedFailure(NS_ERROR_FAILURE);
     }
 
@@ -798,12 +791,9 @@ nsXPConnect::RescueOrphansInScope(JSContext *aJSContext, JSObject *aScopeArg)
     // might need to rescue.
     nsTArray<nsRefPtr<XPCWrappedNative> > wrappersToMove;
 
-    {   // scoped lock
-        XPCAutoLock lock(GetRuntime()->GetMapLock());
-        Native2WrappedNativeMap *map = scope->GetWrappedNativeMap();
-        wrappersToMove.SetCapacity(map->Count());
-        map->Enumerate(MoveableWrapperFinder, &wrappersToMove);
-    }
+    Native2WrappedNativeMap *map = scope->GetWrappedNativeMap();
+    wrappersToMove.SetCapacity(map->Count());
+    map->Enumerate(MoveableWrapperFinder, &wrappersToMove);
 
     // Now that we have the wrappers, reparent them to the new scope.
     for (uint32_t i = 0, stop = wrappersToMove.Length(); i < stop; ++i) {
@@ -882,10 +872,7 @@ nsXPConnect::SetFunctionThisTranslator(const nsIID & aIID,
 {
     XPCJSRuntime* rt = GetRuntime();
     IID2ThisTranslatorMap* map = rt->GetThisTranslatorMap();
-    {
-        XPCAutoLock lock(rt->GetMapLock()); // scoped lock
-        map->Add(aIID, aTranslator);
-    }
+    map->Add(aIID, aTranslator);
     return NS_OK;
 }
 
@@ -1133,7 +1120,8 @@ nsXPConnect::OnProcessNextEvent(nsIThreadInternal *aThread, bool aMayWait,
 
 NS_IMETHODIMP
 nsXPConnect::AfterProcessNextEvent(nsIThreadInternal *aThread,
-                                   uint32_t aRecursionDepth)
+                                   uint32_t aRecursionDepth,
+                                   bool aEventWasProcessed)
 {
     // Watch out for unpaired events during observer registration.
     if (MOZ_UNLIKELY(mEventDepth == 0))
@@ -1285,6 +1273,13 @@ JSContext*
 nsXPConnect::GetCurrentJSContext()
 {
     return GetRuntime()->GetJSContextStack()->Peek();
+}
+
+/* virtual */
+JSContext*
+nsXPConnect::InitSafeJSContext()
+{
+    return GetRuntime()->GetJSContextStack()->InitSafeJSContext();
 }
 
 /* virtual */

@@ -21,8 +21,6 @@ XPIDL_SOURCES += [
 
 XPIDL_MODULE = 'necko_http'
 
-MODULE = 'necko'
-
 EXPORTS += [
     'nsHttp.h',
     'nsHttpAtomList.h',
@@ -39,7 +37,11 @@ EXPORTS.mozilla.net += [
     'PSpdyPush.h',
 ]
 
-UNIFIED_SOURCES += [
+# ASpdySession.cpp and nsHttpAuthCache cannot be built in unified mode because
+# they use plarena.h.
+# The rest of these files cannot be built in unified mode because they want to
+# force NSPR logging.
+SOURCES += [
     'ASpdySession.cpp',
     'ConnectionDiagnostics.cpp',
     'HttpBaseChannel.cpp',
@@ -95,11 +97,15 @@ EXTRA_COMPONENTS += [
 
 FAIL_ON_WARNINGS = True
 
-LIBXUL_LIBRARY = True
-
 MSVC_ENABLE_PGO = True
-
-LIBRARY_NAME = 'nkhttp_s'
 
 include('/ipc/chromium/chromium-config.mozbuild')
 
+FINAL_LIBRARY = 'necko'
+
+LOCAL_INCLUDES += [
+    '../../base/src',
+    '/content/base/src',
+    '/content/events/src',
+    '/xpcom/ds',
+]

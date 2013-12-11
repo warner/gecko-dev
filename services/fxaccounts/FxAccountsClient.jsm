@@ -186,7 +186,7 @@ this.FxAccountsClient.prototype = {
     return Promise.resolve()
       .then(_ => this._request("/certificate/sign", "POST", creds, body))
       .then(resp => resp.cert,
-            err => {dump("HAWK.signCertificate error: "+err+"\n");
+            err => {dump("HAWK.signCertificate error: " + err + "\n");
                     throw err;});
   },
 
@@ -238,7 +238,7 @@ this.FxAccountsClient.prototype = {
    */
   _deriveHawkCredentials: function (tokenHex, context, size) {
     let token = CommonUtils.hexToBytes(tokenHex);
-    let out = CryptoUtils.hkdf(token, undefined, PREFIX_NAME + context, size || 5 * 32);
+    let out = CryptoUtils.hkdf(token, undefined, PREFIX_NAME + context, size || 3 * 32);
 
     return {
       algorithm: "sha256",
@@ -262,7 +262,14 @@ this.FxAccountsClient.prototype = {
    *        A JSON payload
    * @return Promise
    *        Returns a promise that resolves to the JSON response of the API call,
-   *        or is rejected with an error.
+   *        or is rejected with an error. Error responses have the following properties:
+   *        {
+   *          "code": 400, // matches the HTTP status code
+   *          "errno": 107, // stable application-level error number
+   *          "error": "Bad Request", // string description of the error type
+   *          "message": "the value of salt is not allowed to be undefined",
+   *          "info": "https://docs.dev.lcip.og/errors/1234" // link to more info on the error
+   *        }
    */
   _request: function hawkRequest(path, method, credentials, jsonPayload) {
     let deferred = Promise.defer();
@@ -280,16 +287,26 @@ this.FxAccountsClient.prototype = {
     xhr.channel.loadFlags = Ci.nsIChannel.LOAD_BYPASS_CACHE |
                             Ci.nsIChannel.INHIBIT_CACHING;
 
-    xhr.onerror = deferred.reject;
+    // When things really blow up, reconstruct an error object that follows the general format
+    // of the server on error responses.
+    function constructError(err) {
+      return { error: err, message: xhr.statusText, code: xhr.status, errno: xhr.status };
+    }
+
+    xhr.onerror = function() {
+      deferred.reject(constructError('Request failed'));
+    };
+
     xhr.onload = function onload() {
       try {
-        let json = JSON.parse(xhr.responseText);
-        if (json.error) {
-          return deferred.reject(json);
+        let response = JSON.parse(xhr.responseText);
+        if (xhr.status !== 200 || response.error) {
+          // In this case, the response is an object with error information.
+          return deferred.reject(response);
         }
-        return deferred.resolve(json);
+        deferred.resolve(response);
       } catch (e) {
-        return deferred.reject({error: e, message: xhr.statusText, code: xhr.status, errno: xhr.status});
+        deferred.reject(constructError(e));
       }
     };
 

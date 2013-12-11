@@ -240,7 +240,7 @@ struct JSStructuredCloneWriter {
           memory(out.context()), callbacks(cb), closure(cbClosure),
           transferable(out.context(), tVal), transferableObjects(out.context()) { }
 
-    bool init() { return parseTransferable() && memory.init() && writeTransferMap(); }
+    bool init() { return memory.init() && parseTransferable() && writeTransferMap(); }
 
     bool write(const js::Value &v);
 
@@ -345,6 +345,8 @@ static void
 Discard(const uint64_t *begin, const uint64_t *end)
 {
     const uint64_t *point = begin;
+    if (begin >= end)
+        return; // Empty buffer
 
     uint64_t u = LittleEndian::readUint64(point++);
     uint32_t tag = uint32_t(u >> 32);
@@ -827,7 +829,7 @@ JSStructuredCloneWriter::startObject(HandleObject obj, bool *backref)
     /* Handle cycles in the object graph. */
     CloneMemory::AddPtr p = memory.lookupForAdd(obj);
     if ((*backref = p))
-        return out.writePair(SCTAG_BACK_REFERENCE_OBJECT, p->value);
+        return out.writePair(SCTAG_BACK_REFERENCE_OBJECT, p->value());
     if (!memory.add(p, obj, memory.count()))
         return false;
 

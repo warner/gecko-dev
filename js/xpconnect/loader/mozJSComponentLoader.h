@@ -4,9 +4,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#ifndef mozJSComponentLoader_h
+#define mozJSComponentLoader_h
+
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/ModuleLoader.h"
 #include "nsISupports.h"
 #include "nsIObserver.h"
+#include "nsIURI.h"
 #include "xpcIJSModuleLoader.h"
 #include "nsClassHashtable.h"
 #include "nsDataHashtable.h"
@@ -50,6 +55,8 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
     static mozJSComponentLoader* Get() { return sSelf; }
 
     void NoteSubScript(JS::HandleScript aScript, JS::HandleObject aThisObject);
+
+    size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf);
 
  protected:
     static mozJSComponentLoader* sSelf;
@@ -121,6 +128,8 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
             location = nullptr;
         }
 
+        size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
+
         static already_AddRefed<nsIFactory> GetFactory(const mozilla::Module& module,
                                                        const mozilla::Module::CIDEntry& entry);
 
@@ -130,6 +139,12 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
     };
 
     friend class ModuleEntry;
+
+    static size_t DataEntrySizeOfExcludingThis(const nsACString& aKey, ModuleEntry* const& aData,
+                                               mozilla::MallocSizeOf aMallocSizeOf, void* arg);
+    static size_t ClassEntrySizeOfExcludingThis(const nsACString& aKey,
+                                                const nsAutoPtr<ModuleEntry>& aData,
+                                                mozilla::MallocSizeOf aMallocSizeOf, void* arg);
 
     // Modules are intentionally leaked, but still cleared.
     static PLDHashOperator ClearModules(const nsACString& key, ModuleEntry*& entry, void* cx);
@@ -142,3 +157,5 @@ class mozJSComponentLoader : public mozilla::ModuleLoader,
     bool mInitialized;
     bool mReuseLoaderGlobal;
 };
+
+#endif

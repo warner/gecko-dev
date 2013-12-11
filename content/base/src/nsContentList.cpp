@@ -205,7 +205,7 @@ NS_GetContentList(nsINode* aRootNode,
     return list.forget();
   }
 
-  static PLDHashTableOps hash_table_ops =
+  static const PLDHashTableOps hash_table_ops =
   {
     PL_DHashAllocTable,
     PL_DHashFreeTable,
@@ -326,7 +326,7 @@ GetFuncStringContentList(nsINode* aRootNode,
 
   nsRefPtr<nsCacheableFuncStringContentList> list;
 
-  static PLDHashTableOps hash_table_ops =
+  static const PLDHashTableOps hash_table_ops =
   {
     PL_DHashAllocTable,
     PL_DHashFreeTable,
@@ -712,14 +712,22 @@ nsContentList::ContentAppended(nsIDocument* aDocument, nsIContent* aContainer,
   
   /*
    * If the state is LIST_DIRTY then we have no useful information in our list
-   * and we want to put off doing work as much as possible.  Also, if
-   * aContainer is anonymous from our point of view, we know that we can't
-   * possibly be matching any of the kids.
+   * and we want to put off doing work as much as possible.
+   *
+   * Also, if aContainer is anonymous from our point of view, we know that we
+   * can't possibly be matching any of the kids.
+   *
+   * Optimize out also the common case when just one new node is appended and
+   * it doesn't match us.
    */
   if (mState == LIST_DIRTY ||
       !nsContentUtils::IsInSameAnonymousTree(mRootNode, aContainer) ||
-      !MayContainRelevantNodes(aContainer))
+      !MayContainRelevantNodes(aContainer) ||
+      (!aFirstNewContent->HasChildren() &&
+       !aFirstNewContent->GetNextSibling() &&
+       !MatchSelf(aFirstNewContent))) {
     return;
+  }
 
   /*
    * We want to handle the case of ContentAppended by sometimes

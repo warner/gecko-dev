@@ -146,10 +146,10 @@ pref("app.update.certs.1.commonName", "aus4.mozilla.org");
 pref("app.update.certs.2.issuerName", "CN=Thawte SSL CA,O=\"Thawte, Inc.\",C=US");
 pref("app.update.certs.2.commonName", "aus4.mozilla.org");
 #else
-pref("app.update.certs.1.issuerName", "OU=Equifax Secure Certificate Authority,O=Equifax,C=US");
+pref("app.update.certs.1.issuerName", "CN=Thawte SSL CA,O=\"Thawte, Inc.\",C=US");
 pref("app.update.certs.1.commonName", "aus3.mozilla.org");
 
-pref("app.update.certs.2.issuerName", "CN=Thawte SSL CA,O=\"Thawte, Inc.\",C=US");
+pref("app.update.certs.2.issuerName", "CN=DigiCert Secure Server CA,O=DigiCert Inc,C=US");
 pref("app.update.certs.2.commonName", "aus3.mozilla.org");
 #endif
 #endif
@@ -574,11 +574,7 @@ pref("browser.gesture.twist.left", "cmd_gestureRotateLeft");
 pref("browser.gesture.twist.end", "cmd_gestureRotateEnd");
 pref("browser.gesture.tap", "cmd_fullZoomReset");
 
-#ifndef RELEASE_BUILD
-pref("browser.snapshots.limit", 5);
-#else
 pref("browser.snapshots.limit", 0);
-#endif
 
 // 0: Nothing happens
 // 1: Scrolling contents
@@ -659,9 +655,18 @@ pref("plugins.update.notifyUser", false);
 
 pref("plugins.click_to_play", true);
 
-// let all plugins except Flash default to click-to-play
+#ifdef RELEASE_BUILD
+// For now, plugins other than Java and Flash are enabled in beta/release
+// and click-to-activate in earlier channels.
+pref("plugin.default.state", 2);
+#else
 pref("plugin.default.state", 1);
+#endif
+
+// Flash is enabled by default, and Java is click-to-activate by default on
+// all channels.
 pref("plugin.state.flash", 2);
+pref("plugin.state.java", 1);
 
 // display door hanger if flash not installed
 pref("plugins.notifyMissingFlash", true);
@@ -1081,14 +1086,14 @@ pref("devtools.commands.dir", "");
 // Enable the app manager
 pref("devtools.appmanager.enabled", true);
 pref("devtools.appmanager.lastTab", "help");
-pref("devtools.appmanager.manifestEditor.enabled", false);
+pref("devtools.appmanager.manifestEditor.enabled", true);
 
 // Toolbox preferences
 pref("devtools.toolbox.footer.height", 250);
 pref("devtools.toolbox.sidebar.width", 500);
 pref("devtools.toolbox.host", "bottom");
 pref("devtools.toolbox.selectedTool", "webconsole");
-pref("devtools.toolbox.toolbarSpec", '["paintflashing toggle","tilt toggle","scratchpad","resize toggle"]');
+pref("devtools.toolbox.toolbarSpec", '["splitconsole", "paintflashing toggle","tilt toggle","scratchpad","resize toggle"]');
 pref("devtools.toolbox.sideEnabled", true);
 pref("devtools.toolbox.zoomValue", "1");
 
@@ -1150,7 +1155,7 @@ pref("devtools.scratchpad.recentFilesMax", 10);
 
 // Enable the Style Editor.
 pref("devtools.styleeditor.enabled", true);
-pref("devtools.styleeditor.transitions", true);
+pref("devtools.styleeditor.source-maps-enabled", false);
 
 // Enable the Shader Editor.
 pref("devtools.shadereditor.enabled", false);
@@ -1226,14 +1231,6 @@ pref("devtools.hud.loglimit.console", 200);
 // - expandtab: expand Tab characters to spaces.
 pref("devtools.editor.tabsize", 4);
 pref("devtools.editor.expandtab", true);
-
-// Tells which component you want to use for source editing in developer tools.
-//
-// Available components:
-//   "orion" - this is the Orion source code editor from the Eclipse project. It
-//   provides programmer-specific editor features such as syntax highlighting,
-//   indenting and bracket recognition.
-pref("devtools.editor.component", "orion");
 
 // Enable the Font Inspector
 pref("devtools.fontinspector.enabled", true);
@@ -1317,10 +1314,6 @@ pref("security.csp.speccompliant", true);
 // Block insecure active content on https pages
 pref("security.mixed_content.block_active_content", true);
 
-// The URL where remote content that composes the UI for Firefox Accounts should
-// be fetched. Must use HTTPS.
-pref("firefox.accounts.remoteUrl", "https://accounts.dev.lcip.org/flow");
-
 // Override the Gecko-default value of false for Firefox.
 pref("plain_text.wrap_long_lines", true);
 
@@ -1344,4 +1337,3 @@ pref("firefox.accounts.remoteUrl", "https://accounts.dev.lcip.org/flow?moar_nati
 
 // The URL of the Firefox Accounts auth server backend
 pref("identity.fxaccounts.auth.uri", "https://api-accounts.dev.lcip.org/v1");
-

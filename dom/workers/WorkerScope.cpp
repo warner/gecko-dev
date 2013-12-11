@@ -6,11 +6,6 @@
 
 #include "WorkerScope.h"
 
-#include "Location.h"
-#include "Navigator.h"
-#include "ScriptLoader.h"
-#include "WorkerPrivate.h"
-
 #include "jsapi.h"
 #include "mozilla/dom/FunctionBinding.h"
 #include "mozilla/dom/DedicatedWorkerGlobalScopeBinding.h"
@@ -20,11 +15,16 @@
 #include <android/log.h>
 #endif
 
-#include "RuntimeService.h" // For WorkersDumpEnabled().
+#include "Location.h"
+#include "Navigator.h"
+#include "Principal.h"
+#include "RuntimeService.h"
+#include "ScriptLoader.h"
+#include "WorkerPrivate.h"
 
-#define UNWRAP_WORKER_OBJECT(Interface, cx, obj, value)                       \
+#define UNWRAP_WORKER_OBJECT(Interface, obj, value)                           \
   UnwrapObject<prototypes::id::Interface##_workers,                           \
-    mozilla::dom::Interface##Binding_workers::NativeType>(cx, obj, value)
+    mozilla::dom::Interface##Binding_workers::NativeType>(obj, value)
 
 using namespace mozilla::dom;
 USING_WORKERS_NAMESPACE
@@ -41,6 +41,8 @@ WorkerGlobalScope::WorkerGlobalScope(WorkerPrivate* aWorkerPrivate)
 
 WorkerGlobalScope::~WorkerGlobalScope()
 {
+  // Matches the HoldJSObjects in CreateGlobal.
+  mozilla::DropJSObjects(this);
 }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(WorkerGlobalScope)
@@ -232,10 +234,7 @@ WorkerGlobalScope::Dump(const Optional<nsAString>& aString) const
     return;
   }
 
-  RuntimeService* runtimeService = RuntimeService::GetService();
-  MOZ_ASSERT(runtimeService);
-
-  if (!runtimeService->WorkersDumpEnabled()) {
+  if (!mWorkerPrivate->DumpEnabled()) {
     return;
   }
 
@@ -257,24 +256,25 @@ DedicatedWorkerGlobalScope::DedicatedWorkerGlobalScope(WorkerPrivate* aWorkerPri
 DedicatedWorkerGlobalScope::Visible(JSContext* aCx, JSObject* aObj)
 {
   DedicatedWorkerGlobalScope* self = nullptr;
-  nsresult rv = UNWRAP_WORKER_OBJECT(DedicatedWorkerGlobalScope, aCx, aObj, self);
+  nsresult rv = UNWRAP_WORKER_OBJECT(DedicatedWorkerGlobalScope, aObj, self);
   return NS_SUCCEEDED(rv) && self;
 }
 
 JSObject*
-DedicatedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx,
-                                             JS::CompartmentOptions& aOptions,
-                                             JSPrincipals* aPrincipal)
+DedicatedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx)
 {
   mWorkerPrivate->AssertIsOnWorkerThread();
   MOZ_ASSERT(!mWorkerPrivate->IsSharedWorker());
+
+  JS::CompartmentOptions options;
+  mWorkerPrivate->CopyJSCompartmentOptions(options);
 
   // We're wrapping the global, so the scope is undefined.
   JS::Rooted<JSObject*> scope(aCx);
 
   return DedicatedWorkerGlobalScopeBinding_workers::Wrap(aCx, scope, this,
-                                                         this, aOptions,
-                                                         aPrincipal);
+                                                         this, options,
+                                                         GetWorkerPrincipal());
 }
 
 void
@@ -297,23 +297,25 @@ SharedWorkerGlobalScope::SharedWorkerGlobalScope(WorkerPrivate* aWorkerPrivate,
 SharedWorkerGlobalScope::Visible(JSContext* aCx, JSObject* aObj)
 {
   SharedWorkerGlobalScope* self = nullptr;
-  nsresult rv = UNWRAP_WORKER_OBJECT(SharedWorkerGlobalScope, aCx, aObj, self);
+  nsresult rv = UNWRAP_WORKER_OBJECT(SharedWorkerGlobalScope, aObj, self);
   return NS_SUCCEEDED(rv) && self;
 }
 
 JSObject*
-SharedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx,
-                                          JS::CompartmentOptions& aOptions,
-                                          JSPrincipals* aPrincipal)
+SharedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx)
 {
   mWorkerPrivate->AssertIsOnWorkerThread();
   MOZ_ASSERT(mWorkerPrivate->IsSharedWorker());
+
+  JS::CompartmentOptions options;
+  mWorkerPrivate->CopyJSCompartmentOptions(options);
 
   // We're wrapping the global, so the scope is undefined.
   JS::Rooted<JSObject*> scope(aCx);
 
   return SharedWorkerGlobalScopeBinding_workers::Wrap(aCx, scope, this, this,
-                                                      aOptions, aPrincipal);
+                                                      options,
+                                                      GetWorkerPrincipal());
 }
 
 bool

@@ -16,8 +16,8 @@
 
 /* loading of CSS style sheets using the network APIs */
 
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Util.h"
 
 #include "mozilla/css/Loader.h"
 #include "nsIRunnable.h"
@@ -48,6 +48,8 @@
 #include "nsIThreadInternal.h"
 #include "nsCrossSiteListenerProxy.h"
 #include "nsINetworkSeer.h"
+#include "mozilla/dom/ShadowRoot.h"
+#include "mozilla/dom/URL.h"
 
 #ifdef MOZ_XUL
 #include "nsXULPrototypeCache.h"
@@ -447,7 +449,8 @@ SheetLoadData::OnProcessNextEvent(nsIThreadInternal* aThread,
 
 NS_IMETHODIMP
 SheetLoadData::AfterProcessNextEvent(nsIThreadInternal* aThread,
-                                     uint32_t aRecursionDepth)
+                                     uint32_t aRecursionDepth,
+                                     bool aEventWasProcessed)
 {
   // We want to fire our load even before or after event processing,
   // whichever comes first.
@@ -941,16 +944,6 @@ SheetLoadData::OnStreamComplete(nsIUnicharStreamLoader* aLoader,
   NS_ASSERTION(completed || !mSyncLoad, "sync load did not complete");
   return result;
 }
-
-#ifdef MOZ_XUL
-static bool IsChromeURI(nsIURI* aURI)
-{
-  NS_ASSERTION(aURI, "Have to pass in a URI");
-  bool isChrome = false;
-  aURI->SchemeIs("chrome", &isChrome);
-  return isChrome;
-}
-#endif
 
 bool
 Loader::IsAlternate(const nsAString& aTitle, bool aHasAlternateRel)
@@ -1887,8 +1880,14 @@ Loader::LoadInlineStyle(nsIContent* aElement,
 
   PrepareSheet(sheet, aTitle, aMedia, nullptr, aScopeElement, *aIsAlternate);
 
-  rv = InsertSheetInDoc(sheet, aElement, mDocument);
-  NS_ENSURE_SUCCESS(rv, rv);
+  if (aElement->HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+    ShadowRoot* containingShadow = aElement->GetContainingShadow();
+    MOZ_ASSERT(containingShadow);
+    containingShadow->InsertSheet(sheet, aElement);
+  } else {
+    rv = InsertSheetInDoc(sheet, aElement, mDocument);
+    NS_ENSURE_SUCCESS(rv, rv);
+  }
 
   SheetLoadData* data = new SheetLoadData(this, aTitle, nullptr, sheet,
                                           owningElement, *aIsAlternate,

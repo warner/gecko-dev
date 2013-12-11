@@ -9,6 +9,7 @@
 #include <algorithm>
 
 // Keep others in (case-insensitive) order:
+#include "gfx2DGlue.h"
 #include "gfxContext.h"
 #include "gfxImageSurface.h"
 #include "gfxMatrix.h"
@@ -38,7 +39,7 @@
 #include "nsSVGFilterPaintCallback.h"
 #include "nsSVGForeignObjectFrame.h"
 #include "nsSVGGeometryFrame.h"
-#include "nsSVGGlyphFrame.h"
+#include "gfxSVGGlyphs.h"
 #include "nsSVGInnerSVGFrame.h"
 #include "nsSVGIntegrationUtils.h"
 #include "nsSVGLength2.h"
@@ -49,11 +50,9 @@
 #include "nsSVGPathGeometryFrame.h"
 #include "nsSVGPaintServerFrame.h"
 #include "mozilla/dom/SVGSVGElement.h"
-#include "nsSVGTextContainerFrame.h"
 #include "nsTextFrame.h"
 #include "SVGContentUtils.h"
 #include "mozilla/unused.h"
-#include "gfx2DGlue.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -135,7 +134,6 @@ static const uint8_t gsRGBToLinearRGBMap[256] = {
 
 static bool sSVGDisplayListHitTestingEnabled;
 static bool sSVGDisplayListPaintingEnabled;
-static bool sSVGTextCSSFramesEnabled;
 
 bool
 NS_SVGDisplayListHitTestingEnabled()
@@ -147,12 +145,6 @@ bool
 NS_SVGDisplayListPaintingEnabled()
 {
   return sSVGDisplayListPaintingEnabled;
-}
-
-bool
-NS_SVGTextCSSFramesEnabled()
-{
-  return sSVGTextCSSFramesEnabled;
 }
 
 // we only take the address of this:
@@ -213,9 +205,6 @@ nsSVGUtils::Init()
 
   Preferences::AddBoolVarCache(&sSVGDisplayListPaintingEnabled,
                                "svg.display-lists.painting.enabled");
-
-  Preferences::AddBoolVarCache(&sSVGTextCSSFramesEnabled,
-                               "svg.text.css-frames.enabled");
 }
 
 void
@@ -1101,35 +1090,31 @@ nsSVGUtils::GetClipRectForFrame(nsIFrame *aFrame,
 void
 nsSVGUtils::CompositeSurfaceMatrix(gfxContext *aContext,
                                    gfxASurface *aSurface,
-                                   const gfxMatrix &aCTM, float aOpacity)
+                                   SourceSurface *aSourceSurface,
+                                   const gfxPoint &aSurfaceOffset,
+                                   const gfxMatrix &aCTM)
 {
   if (aCTM.IsSingular())
     return;
-  
-  if (aContext->IsCairo()) {
+
+  if (aSurface) {
     aContext->Save();
     aContext->Multiply(aCTM);
+    aContext->Translate(aSurfaceOffset);
     aContext->SetSource(aSurface);
-    aContext->Paint(aOpacity);
+    aContext->Paint();
     aContext->Restore();
   } else {
-    DrawTarget *dt = aContext->GetDrawTarget();
-    Matrix oldMat = dt->GetTransform();
-    RefPtr<SourceSurface> surf =
-      gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(dt, aSurface);
-    dt->SetTransform(ToMatrix(aCTM) * oldMat);
+    DrawTarget *destDT = aContext->GetDrawTarget();
+    Matrix oldMat = destDT->GetTransform();
+    destDT->SetTransform(ToMatrix(aCTM) * oldMat);
 
-    gfxSize size = aSurface->GetSize();
-    NS_ASSERTION(size.width >= 0 && size.height >= 0, "Failure to get size for aSurface.");
+    IntSize size = aSourceSurface->GetSize();
+    Rect sourceRect(Point(0, 0), Size(size.width, size.height));
+    Rect drawRect = sourceRect + ToPoint(aSurfaceOffset);
+    destDT->DrawSurface(aSourceSurface, drawRect, sourceRect);
 
-    gfxPoint pt = aSurface->GetDeviceOffset();
-
-    dt->FillRect(Rect(-pt.x, -pt.y, size.width, size.height),
-                 SurfacePattern(surf, EXTEND_CLAMP,
-                                Matrix(1.0f, 0, 0, 1.0f, -pt.x, -pt.y)),
-                 DrawOptions(aOpacity));
-
-    dt->SetTransform(oldMat);
+    destDT->SetTransform(oldMat);
   }
 }
 
@@ -1194,15 +1179,6 @@ nsSVGUtils::GetBBox(nsIFrame *aFrame, uint32_t aFlags)
         }
       }
       svg = do_QueryFrame(ancestor);
-    } else {
-      nsSVGTextContainerFrame* metrics = do_QueryFrame(
-        GetFirstNonAAncestorFrame(aFrame));
-      if (metrics) {
-        while (aFrame->GetType() != nsGkAtoms::svgTextFrame) {
-          aFrame = aFrame->GetParent();
-        }
-        svg = do_QueryFrame(aFrame);
-      }
     }
     nsIContent* content = aFrame->GetContent();
     if (content->IsSVG() &&
@@ -1265,9 +1241,7 @@ nsSVGUtils::CanOptimizeOpacity(nsIFrame *aFrame)
   if (style->HasMarker()) {
     return false;
   }
-  if (style->mFill.mType == eStyleSVGPaintType_None ||
-      style->mFillOpacity <= 0 ||
-      !HasStroke(aFrame)) {
+  if (!style->HasFill() || !HasStroke(aFrame)) {
     return true;
   }
   return false;
@@ -1579,9 +1553,7 @@ bool
 nsSVGUtils::HasStroke(nsIFrame* aFrame, gfxTextContextPaint *aContextPaint)
 {
   const nsStyleSVG *style = aFrame->StyleSVG();
-  return style->mStroke.mType != eStyleSVGPaintType_None &&
-         style->mStrokeOpacity > 0 &&
-         GetStrokeWidth(aFrame, aContextPaint) > 0;
+  return style->HasStroke() && GetStrokeWidth(aFrame, aContextPaint) > 0;
 }
 
 float

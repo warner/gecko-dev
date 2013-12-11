@@ -885,10 +885,7 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
 
     if (forceTTY) {
         file = stdin;
-    } else
-#ifdef HAVE_ISATTY
-    if (!isatty(fileno(file)))
-#endif
+    } else if (!isatty(fileno(file)))
     {
         /*
          * It's not interactive - just execute it.
@@ -946,8 +943,10 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
         DoBeginRequest(cx);
         /* Clear any pending exception from previous failed compiles.  */
         JS_ClearPendingException(cx);
-        script = JS_CompileScriptForPrincipals(cx, obj, gJSPrincipals, buffer,
-                                               strlen(buffer), "typein", startline);
+        JS::CompileOptions options(cx);
+        options.setFileAndLine("typein", startline)
+               .setPrincipals(gJSPrincipals);
+        script = JS_CompileScript(cx, obj, buffer, strlen(buffer), options);
         if (script) {
             JSErrorReporter older;
 
@@ -1023,8 +1022,7 @@ ProcessArgsForCompartment(JSContext *cx, char **argv, int argc)
             ContextOptionsRef(cx).toggleExtraWarnings();
             break;
         case 'I':
-            ContextOptionsRef(cx).toggleCompileAndGo()
-                                 .toggleIon()
+            ContextOptionsRef(cx).toggleIon()
                                  .toggleAsmJS();
             break;
         case 'n':

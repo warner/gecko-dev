@@ -4,8 +4,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-MODULE = 'layout'
-
 UNIFIED_SOURCES += [
     'nsMathMLChar.cpp',
     'nsMathMLContainerFrame.cpp',
@@ -33,7 +31,18 @@ UNIFIED_SOURCES += [
 
 FAIL_ON_WARNINGS = True
 
-LIBXUL_LIBRARY = True
+FINAL_LIBRARY = 'gklayout'
+LOCAL_INCLUDES += [
+    '../base',
+    '../generic',
+    '../style',
+    '../tables',
+    '../xul',
+    '/content/base/src',
+    '/content/mathml/content/src',
+]
 
-LIBRARY_NAME = 'gkmathml_s'
-
+if CONFIG['ENABLE_TESTS']:
+    PARALLEL_DIRS += [
+        'tests',
+    ]

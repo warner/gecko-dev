@@ -98,6 +98,7 @@ nsHttpTransaction::nsHttpTransaction()
     , mPriority(0)
     , mRestartCount(0)
     , mCaps(0)
+    , mCapsToClear(0)
     , mClassification(CLASS_GENERAL)
     , mPipelinePosition(0)
     , mHttpVersion(NS_HTTP_VERSION_UNKNOWN)
@@ -230,17 +231,20 @@ nsHttpTransaction::Init(uint32_t caps,
         mActivityDistributor = nullptr;
     }
 
-    // obtain app info
-    bool isInBrowser;
     nsCOMPtr<nsIChannel> channel = do_QueryInterface(eventsink);
     if (channel) {
+        bool isInBrowser;
         NS_GetAppInfo(channel, &mAppId, &isInBrowser);
     }
 
-    // obtain active connection type
+#ifdef MOZ_WIDGET_GONK
     if (mAppId != NECKO_NO_APP_ID) {
-        GetActiveNetwork();
+        nsCOMPtr<nsINetworkInterface> activeNetwork;
+        NS_GetActiveNetworkInterface(activeNetwork);
+        mActiveNetwork =
+            new nsMainThreadPtrHolder<nsINetworkInterface>(activeNetwork);
     }
+#endif
 
     // create transport event sink proxy. it coalesces all events if and only
     // if the activity observer is not active. when the observer is active
@@ -549,7 +553,14 @@ nsHttpTransaction::Status()
 uint32_t
 nsHttpTransaction::Caps()
 {
-    return mCaps;
+    return mCaps & ~mCapsToClear;
+}
+
+void
+nsHttpTransaction::SetDNSWasRefreshed()
+{
+    MOZ_ASSERT(NS_IsMainThread(), "SetDNSWasRefreshed on main thread only!");
+    mCapsToClear |= NS_HTTP_REFRESH_DNS;
 }
 
 uint64_t
@@ -705,28 +716,6 @@ nsHttpTransaction::WriteSegments(nsAHttpSegmentWriter *writer,
     }
 
     return rv;
-}
-
-void
-nsHttpTransaction::GetActiveNetwork()
-{
-#ifdef MOZ_WIDGET_GONK
-    MOZ_ASSERT(NS_IsMainThread());
-
-    nsresult rv;
-    nsCOMPtr<nsINetworkManager> networkManager =
-        do_GetService("@mozilla.org/network/manager;1", &rv);
-
-    if (NS_FAILED(rv) || !networkManager) {
-        mActiveNetwork = nullptr;
-        return;
-    }
-
-    nsCOMPtr<nsINetworkInterface> activeNetwork;
-    networkManager->GetActive(getter_AddRefs(activeNetwork));
-    mActiveNetwork =
-        new nsMainThreadPtrHolder<nsINetworkInterface>(activeNetwork);
-#endif
 }
 
 //-----------------------------------------------------------------------------

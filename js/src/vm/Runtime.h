@@ -47,8 +47,6 @@
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable:4100) /* Silence unreferenced formal parameter warnings */
-#pragma warning(push)
-#pragma warning(disable:4355) /* Silence warning about "this" used in base member initializer list */
 #endif
 
 namespace js {
@@ -113,6 +111,23 @@ struct GSNCache {
     void purge();
 };
 
+/*
+ * ScopeCoordinateName cache to avoid O(n^2) growth in finding the name
+ * associated with a given aliasedvar operation.
+ */
+struct ScopeCoordinateNameCache {
+    typedef HashMap<uint32_t,
+                    jsid,
+                    DefaultHasher<uint32_t>,
+                    SystemAllocPolicy> Map;
+
+    Shape *shape;
+    Map map;
+
+    ScopeCoordinateNameCache() : shape(nullptr) {}
+    void purge();
+};
+
 typedef Vector<ScriptAndCounts, 0, SystemAllocPolicy> ScriptAndCountsVector;
 
 struct ConservativeGCData
@@ -165,21 +180,6 @@ struct ConservativeGCData
     bool hasStackToScan() const {
         return !!nativeStackTop;
     }
-};
-
-class SourceDataCache
-{
-    typedef HashMap<ScriptSource *,
-                    JSStableString *,
-                    DefaultHasher<ScriptSource *>,
-                    SystemAllocPolicy> Map;
-    Map *map_;
-
-  public:
-    SourceDataCache() : map_(nullptr) {}
-    JSStableString *lookup(ScriptSource *ss);
-    void put(ScriptSource *ss, JSStableString *);
-    void purge();
 };
 
 struct EvalCacheEntry
@@ -461,15 +461,20 @@ struct JSAtomState
 #define PROPERTYNAME_FIELD(idpart, id, text) js::FixedHeapPtr<js::PropertyName> id;
     FOR_EACH_COMMON_PROPERTYNAME(PROPERTYNAME_FIELD)
 #undef PROPERTYNAME_FIELD
-#define PROPERTYNAME_FIELD(name, code, init) js::FixedHeapPtr<js::PropertyName> name;
+#define PROPERTYNAME_FIELD(name, code, init, clasp) js::FixedHeapPtr<js::PropertyName> name;
     JS_FOR_EACH_PROTOTYPE(PROPERTYNAME_FIELD)
 #undef PROPERTYNAME_FIELD
 };
 
-#define NAME_OFFSET(name)       offsetof(JSAtomState, name)
-#define OFFSET_TO_NAME(rt,off)  (*(js::FixedHeapPtr<js::PropertyName>*)((char*)&(rt)->atomState + (off)))
-
 namespace js {
+
+#define NAME_OFFSET(name)       offsetof(JSAtomState, name)
+
+inline HandlePropertyName
+AtomStateOffsetToName(const JSAtomState &atomState, size_t offset)
+{
+    return *(js::FixedHeapPtr<js::PropertyName>*)((char*)&atomState + offset);
+}
 
 /*
  * Encapsulates portions of the runtime/context that are tied to a
@@ -672,6 +677,7 @@ class MarkingValidator;
 typedef Vector<JS::Zone *, 4, SystemAllocPolicy> ZoneVector;
 
 class AutoLockForExclusiveAccess;
+class AutoProtectHeapForCompilation;
 
 void RecomputeStackLimit(JSRuntime *rt, StackKind kind);
 
@@ -1015,7 +1021,16 @@ struct JSRuntime : public JS::shadow::Runtime,
     int64_t             gcNextFullGCTime;
     int64_t             gcLastGCTime;
     int64_t             gcJitReleaseTime;
-    JSGCMode            gcMode;
+  private:
+    JSGCMode            gcMode_;
+
+  public:
+    JSGCMode gcMode() const { return gcMode_; }
+    void setGCMode(JSGCMode mode) {
+        gcMode_ = mode;
+        gcMarker.setGCMode(mode);
+    }
+
     size_t              gcAllocationThreshold;
     bool                gcHighFrequencyGC;
     uint64_t            gcHighFrequencyTimeThreshold;
@@ -1416,6 +1431,18 @@ struct JSRuntime : public JS::shadow::Runtime,
     const char          *numGrouping;
 #endif
 
+    friend class js::AutoProtectHeapForCompilation;
+    friend class js::AutoThreadSafeAccess;
+    mozilla::DebugOnly<bool> heapProtected_;
+#ifdef DEBUG
+    js::Vector<js::gc::ArenaHeader *, 0, js::SystemAllocPolicy> unprotectedArenas;
+
+  public:
+    bool heapProtected() {
+        return heapProtected_;
+    }
+#endif
+
   private:
     js::MathCache *mathCache_;
     js::MathCache *createMathCache(JSContext *cx);
@@ -1428,6 +1455,7 @@ struct JSRuntime : public JS::shadow::Runtime,
     }
 
     js::GSNCache        gsnCache;
+    js::ScopeCoordinateNameCache scopeCoordinateNameCache;
     js::NewObjectCache  newObjectCache;
     js::NativeIterCache nativeIterCache;
     js::SourceDataCache sourceDataCache;
@@ -1588,7 +1616,11 @@ struct JSRuntime : public JS::shadow::Runtime,
     // their callee.
     js::Value            ionReturnOverride_;
 
+#ifdef JS_THREADSAFE
     static mozilla::Atomic<size_t> liveRuntimesCount;
+#else
+    static size_t liveRuntimesCount;
+#endif
 
   public:
     static bool hasLiveRuntimes() {
@@ -1675,14 +1707,20 @@ struct JSRuntime : public JS::shadow::Runtime,
   private:
 
     JSUseHelperThreads useHelperThreads_;
-    int32_t requestedHelperThreadCount;
+    unsigned cpuCount_;
 
     // Settings for how helper threads can be used.
-    bool useHelperThreadsForIonCompilation_;
-    bool useHelperThreadsForParsing_;
+    bool parallelIonCompilationEnabled_;
+    bool parallelParsingEnabled_;
+
+    // True iff this is a DOM Worker runtime.
+    bool isWorkerRuntime_;
 
   public:
 
+    // This controls whether the JSRuntime is allowed to create any helper
+    // threads at all. This means both specific threads (background GC thread)
+    // and the general JS worker thread pool.
     bool useHelperThreads() const {
 #ifdef JS_THREADSAFE
         return useHelperThreads_ == JS_USE_HELPER_THREADS;
@@ -1691,35 +1729,53 @@ struct JSRuntime : public JS::shadow::Runtime,
 #endif
     }
 
-    void requestHelperThreadCount(size_t count) {
-        requestedHelperThreadCount = count;
+    // This allows the JS shell to override GetCPUCount() when passed the
+    // --thread-count=N option.
+    void setFakeCPUCount(size_t count) {
+        cpuCount_ = count;
     }
 
-    /* Number of helper threads which should be created for this runtime. */
-    size_t helperThreadCount() const {
-#ifdef JS_WORKER_THREADS
-        if (requestedHelperThreadCount < 0) {
-            unsigned ncpus = js::GetCPUCount();
-            return ncpus == 1 ? 0 : ncpus;
-        }
-        return requestedHelperThreadCount;
-#else
-        return 0;
-#endif
+    // Return a cached value of GetCPUCount() to avoid making the syscall all
+    // the time. Furthermore, this avoids pathological cases where the result of
+    // GetCPUCount() changes during execution.
+    unsigned cpuCount() const {
+        JS_ASSERT(cpuCount_ > 0);
+        return cpuCount_;
     }
 
-    void setCanUseHelperThreadsForIonCompilation(bool value) {
-        useHelperThreadsForIonCompilation_ = value;
-    }
-    bool useHelperThreadsForIonCompilation() const {
-        return useHelperThreadsForIonCompilation_;
+    // The number of worker threads that will be available after
+    // EnsureWorkerThreadsInitialized has been called successfully.
+    unsigned workerThreadCount() const {
+        if (!useHelperThreads())
+            return 0;
+        return js::Max(2u, cpuCount());
     }
 
-    void setCanUseHelperThreadsForParsing(bool value) {
-        useHelperThreadsForParsing_ = value;
+    // Note: these values may be toggled dynamically (in response to about:config
+    // prefs changing).
+    void setParallelIonCompilationEnabled(bool value) {
+        parallelIonCompilationEnabled_ = value;
     }
-    bool useHelperThreadsForParsing() const {
-        return useHelperThreadsForParsing_;
+    bool canUseParallelIonCompilation() const {
+        // Require cpuCount_ > 1 so that Ion compilation jobs and main-thread
+        // execution are not competing for the same resources.
+        return useHelperThreads() &&
+               parallelIonCompilationEnabled_ &&
+               cpuCount_ > 1;
+    }
+    void setParallelParsingEnabled(bool value) {
+        parallelParsingEnabled_ = value;
+    }
+    bool canUseParallelParsing() const {
+        return useHelperThreads() &&
+               parallelParsingEnabled_;
+    }
+
+    void setIsWorkerRuntime() {
+        isWorkerRuntime_ = true;
+    }
+    bool isWorkerRuntime() const {
+        return isWorkerRuntime_;
     }
 
 #ifdef DEBUG
@@ -1993,10 +2049,26 @@ class RuntimeAllocPolicy
 
 extern const JSSecurityCallbacks NullSecurityCallbacks;
 
+class AutoProtectHeapForCompilation
+{
+  public:
+#if defined(DEBUG) && !defined(XP_WIN)
+    JSRuntime *runtime;
+
+    AutoProtectHeapForCompilation(JSRuntime *rt MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+    ~AutoProtectHeapForCompilation();
+#else
+    AutoProtectHeapForCompilation(JSRuntime *rt MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+    {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+    }
+#endif
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
+};
+
 } /* namespace js */
 
 #ifdef _MSC_VER
-#pragma warning(pop)
 #pragma warning(pop)
 #endif
 

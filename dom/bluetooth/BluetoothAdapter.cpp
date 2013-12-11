@@ -9,6 +9,7 @@
 #include "nsCxPusher.h"
 #include "nsDOMClassInfo.h"
 #include "nsIDOMBluetoothDeviceEvent.h"
+#include "nsIDOMBluetoothDiscoveryStateChangedEvent.h"
 #include "nsIDOMBluetoothStatusChangedEvent.h"
 #include "nsTArrayHelpers.h"
 #include "DOMRequest.h"
@@ -18,7 +19,6 @@
 #include "mozilla/dom/BluetoothAdapterBinding.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/LazyIdleThread.h"
-#include "mozilla/Util.h"
 
 #include "BluetoothAdapter.h"
 #include "BluetoothDevice.h"
@@ -82,7 +82,6 @@ public:
       v.get_ArrayOfBluetoothNamedValue();
 
     nsTArray<nsRefPtr<BluetoothDevice> > devices;
-    JSObject* JsDevices;
     for (uint32_t i = 0; i < values.Length(); i++) {
       const BluetoothValue properties = values[i].value();
       if (properties.type() != BluetoothValue::TArrayOfBluetoothNamedValue) {
@@ -106,6 +105,7 @@ public:
     }
 
     AutoPushJSContext cx(sc->GetNativeContext());
+    JSObject* JsDevices = nullptr;
     rv = nsTArrayToJSArray(cx, devices, &JsDevices);
     if (!JsDevices) {
       BT_WARNING("Cannot create JS array!");
@@ -320,6 +320,19 @@ BluetoothAdapter::Notify(const BluetoothSignal& aData)
 
     MOZ_ASSERT(arr.Length() == 1);
     SetPropertyByValue(arr[0]);
+  } else if (aData.name().EqualsLiteral(DISCOVERY_STATE_CHANGED_ID)) {
+    MOZ_ASSERT(v.type() == BluetoothValue::Tbool);
+    bool isDiscovering = v.get_bool();
+
+    nsCOMPtr<nsIDOMEvent> event;
+    NS_NewDOMBluetoothDiscoveryStateChangedEvent(
+      getter_AddRefs(event), this, nullptr, nullptr);
+
+    nsCOMPtr<nsIDOMBluetoothDiscoveryStateChangedEvent> e =
+      do_QueryInterface(event);
+    e->InitBluetoothDiscoveryStateChangedEvent(aData.name(), false, false,
+                                               isDiscovering);
+    DispatchTrustedEvent(event);
   } else if (aData.name().EqualsLiteral(PAIRED_STATUS_CHANGED_ID) ||
              aData.name().EqualsLiteral(HFP_STATUS_CHANGED_ID) ||
              aData.name().EqualsLiteral(SCO_STATUS_CHANGED_ID) ||

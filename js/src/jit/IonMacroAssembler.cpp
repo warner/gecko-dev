@@ -605,7 +605,11 @@ MacroAssembler::clampDoubleToUint8(FloatRegister input, Register output)
     addDouble(ScratchFloatReg, input);
 
     Label outOfRange;
-    branchTruncateDouble(input, output, &outOfRange);
+
+    // Truncate to int32 and ensure the result <= 255. This relies on the
+    // processor setting output to a value > 255 for doubles outside the int32
+    // range (for instance 0x80000000).
+    cvttsd2si(input, output);
     branch32(Assembler::Above, output, Imm32(255), &outOfRange);
     {
         // Check if we had a tie.
@@ -636,12 +640,10 @@ MacroAssembler::newGCThing(const Register &result, gc::AllocKind allocKind, Labe
 
     int thingSize = int(gc::Arena::thingSize(allocKind));
 
-    Zone *zone = GetIonContext()->compartment->zone();
-
 #ifdef JS_GC_ZEAL
     // Don't execute the inline path if gcZeal is active.
     branch32(Assembler::NotEqual,
-             AbsoluteAddress(&GetIonContext()->runtime->gcZeal_), Imm32(0),
+             AbsoluteAddress(GetIonContext()->runtime->addressOfGCZeal()), Imm32(0),
              fail);
 #endif
 
@@ -651,7 +653,7 @@ MacroAssembler::newGCThing(const Register &result, gc::AllocKind allocKind, Labe
         jump(fail);
 
 #ifdef JSGC_GENERATIONAL
-    Nursery &nursery = GetIonContext()->runtime->gcNursery;
+    const Nursery &nursery = GetIonContext()->runtime->gcNursery();
     if (nursery.isEnabled() &&
         allocKind <= gc::FINALIZE_OBJECT_LAST &&
         initialHeap != gc::TenuredHeap)
@@ -668,28 +670,27 @@ MacroAssembler::newGCThing(const Register &result, gc::AllocKind allocKind, Labe
     }
 #endif // JSGC_GENERATIONAL
 
+    CompileZone *zone = GetIonContext()->compartment->zone();
+
     // Inline FreeSpan::allocate.
     // There is always exactly one FreeSpan per allocKind per JSCompartment.
     // If a FreeSpan is replaced, its members are updated in the freeLists table,
     // which the code below always re-reads.
-    gc::FreeSpan *list = const_cast<gc::FreeSpan *>
-                         (zone->allocator.arenas.getFreeList(allocKind));
-    loadPtr(AbsoluteAddress(&list->first), result);
-    branchPtr(Assembler::BelowOrEqual, AbsoluteAddress(&list->last), result, fail);
+    loadPtr(AbsoluteAddress(zone->addressOfFreeListFirst(allocKind)), result);
+    branchPtr(Assembler::BelowOrEqual, AbsoluteAddress(zone->addressOfFreeListLast(allocKind)), result, fail);
 
     addPtr(Imm32(thingSize), result);
-    storePtr(result, AbsoluteAddress(&list->first));
+    storePtr(result, AbsoluteAddress(zone->addressOfFreeListFirst(allocKind)));
     subPtr(Imm32(thingSize), result);
 }
 
 void
-MacroAssembler::newGCThing(const Register &result, JSObject *templateObject, Label *fail)
+MacroAssembler::newGCThing(const Register &result, JSObject *templateObject,
+                           Label *fail, gc::InitialHeap initialHeap)
 {
     gc::AllocKind allocKind = templateObject->tenuredGetAllocKind();
     JS_ASSERT(allocKind >= gc::FINALIZE_OBJECT0 && allocKind <= gc::FINALIZE_OBJECT_LAST);
-    JS_ASSERT(!templateObject->hasDynamicElements());
 
-    gc::InitialHeap initialHeap = templateObject->type()->initialHeapForJITAlloc();
     newGCThing(result, allocKind, fail, initialHeap);
 }
 
@@ -760,7 +761,6 @@ MacroAssembler::newGCThingPar(const Register &result, const Register &slice,
 {
     gc::AllocKind allocKind = templateObject->tenuredGetAllocKind();
     JS_ASSERT(allocKind >= gc::FINALIZE_OBJECT0 && allocKind <= gc::FINALIZE_OBJECT_LAST);
-    JS_ASSERT(!templateObject->hasDynamicElements());
 
     newGCThingPar(result, slice, tempReg1, tempReg2, allocKind, fail);
 }
@@ -785,6 +785,8 @@ void
 MacroAssembler::initGCThing(const Register &obj, JSObject *templateObject)
 {
     // Fast initialization of an empty object returned by NewGCThing().
+
+    JS_ASSERT(!templateObject->hasDynamicElements());
 
     storePtr(ImmGCPtr(templateObject->lastProperty()), Address(obj, JSObject::offsetOfShape()));
     storePtr(ImmGCPtr(templateObject->type()), Address(obj, JSObject::offsetOfType()));
@@ -815,7 +817,8 @@ MacroAssembler::initGCThing(const Register &obj, JSObject *templateObject)
 
         // Fixed slots of non-array objects are required to be initialized.
         // Use the values currently in the template object.
-        size_t nslots = Min(templateObject->numFixedSlots(), templateObject->slotSpan());
+        size_t nslots = Min(templateObject->numFixedSlotsForCompilation(),
+                            templateObject->lastProperty()->slotSpan(templateObject->getClass()));
         for (unsigned i = 0; i < nslots; i++) {
             storeValue(templateObject->getFixedSlot(i),
                        Address(obj, JSObject::getFixedSlotOffset(i)));
@@ -870,7 +873,7 @@ void
 MacroAssembler::checkInterruptFlagsPar(const Register &tempReg,
                                             Label *fail)
 {
-    movePtr(ImmPtr(&GetIonContext()->runtime->interrupt), tempReg);
+    movePtr(ImmPtr(GetIonContext()->runtime->addressOfInterrupt()), tempReg);
     load32(Address(tempReg, 0), tempReg);
     branchTest32(Assembler::NonZero, tempReg, tempReg, fail);
 }
@@ -1202,7 +1205,46 @@ MacroAssembler::handleFailure(ExecutionMode executionMode)
         sps_->reenter(*this, InvalidReg);
 }
 
-static void printf0_(const char *output) {
+#ifdef DEBUG
+static inline bool
+IsCompilingAsmJS()
+{
+    // asm.js compilation pushes an IonContext with a null JSCompartment.
+    IonContext *ictx = MaybeGetIonContext();
+    return ictx && ictx->compartment == nullptr;
+}
+#endif
+
+static void
+AssumeUnreachable_(const char *output) {
+    MOZ_ReportAssertionFailure(output, __FILE__, __LINE__);
+}
+
+void
+MacroAssembler::assumeUnreachable(const char *output)
+{
+#ifdef DEBUG
+    // AsmJS forbids use of ImmPtr.
+    if (!IsCompilingAsmJS()) {
+        RegisterSet regs = RegisterSet::Volatile();
+        PushRegsInMask(regs);
+
+        Register temp = regs.takeGeneral();
+
+        setupUnalignedABICall(1, temp);
+        movePtr(ImmPtr(output), temp);
+        passABIArg(temp);
+        callWithABI(JS_FUNC_TO_DATA_PTR(void *, AssumeUnreachable_));
+
+        PopRegsInMask(RegisterSet::Volatile());
+    }
+#endif
+
+    breakpoint();
+}
+
+static void
+Printf0_(const char *output) {
     printf("%s", output);
 }
 
@@ -1217,12 +1259,13 @@ MacroAssembler::printf(const char *output)
     setupUnalignedABICall(1, temp);
     movePtr(ImmPtr(output), temp);
     passABIArg(temp);
-    callWithABI(JS_FUNC_TO_DATA_PTR(void *, printf0_));
+    callWithABI(JS_FUNC_TO_DATA_PTR(void *, Printf0_));
 
     PopRegsInMask(RegisterSet::Volatile());
 }
 
-static void printf1_(const char *output, uintptr_t value) {
+static void
+Printf1_(const char *output, uintptr_t value) {
     char *line = JS_sprintf_append(nullptr, output, value);
     printf("%s", line);
     js_free(line);
@@ -1242,7 +1285,7 @@ MacroAssembler::printf(const char *output, Register value)
     movePtr(ImmPtr(output), temp);
     passABIArg(temp);
     passABIArg(value);
-    callWithABI(JS_FUNC_TO_DATA_PTR(void *, printf1_));
+    callWithABI(JS_FUNC_TO_DATA_PTR(void *, Printf1_));
 
     PopRegsInMask(RegisterSet::Volatile());
 }
@@ -1523,7 +1566,8 @@ MacroAssembler::convertValueToInt(ValueOperand value, MDefinition *maybeInput,
                                   Label *handleStringEntry, Label *handleStringRejoin,
                                   Label *truncateDoubleSlow,
                                   Register stringReg, FloatRegister temp, Register output,
-                                  Label *fail, IntConversionBehavior behavior)
+                                  Label *fail, IntConversionBehavior behavior,
+                                  IntConversionInputKind conversion)
 {
     Register tag = splitTagForTest(value);
     bool handleStrings = (behavior == IntConversion_Truncate ||
@@ -1532,29 +1576,36 @@ MacroAssembler::convertValueToInt(ValueOperand value, MDefinition *maybeInput,
                          handleStringRejoin;
     bool zeroObjects = behavior == IntConversion_ClampToUint8;
 
+    JS_ASSERT_IF(handleStrings || zeroObjects, conversion == IntConversion_Any);
+
     Label done, isInt32, isBool, isDouble, isNull, isString;
 
     branchEqualTypeIfNeeded(MIRType_Int32, maybeInput, tag, &isInt32);
-    branchEqualTypeIfNeeded(MIRType_Boolean, maybeInput, tag, &isBool);
+    if (conversion == IntConversion_Any)
+        branchEqualTypeIfNeeded(MIRType_Boolean, maybeInput, tag, &isBool);
     branchEqualTypeIfNeeded(MIRType_Double, maybeInput, tag, &isDouble);
 
-    // If we are not truncating, we fail for anything that's not
-    // null. Otherwise we might be able to handle strings and objects.
-    switch (behavior) {
-      case IntConversion_Normal:
-      case IntConversion_NegativeZeroCheck:
-        branchTestNull(Assembler::NotEqual, tag, fail);
-        break;
+    if (conversion == IntConversion_Any) {
+        // If we are not truncating, we fail for anything that's not
+        // null. Otherwise we might be able to handle strings and objects.
+        switch (behavior) {
+          case IntConversion_Normal:
+          case IntConversion_NegativeZeroCheck:
+            branchTestNull(Assembler::NotEqual, tag, fail);
+            break;
 
-      case IntConversion_Truncate:
-      case IntConversion_ClampToUint8:
-        branchEqualTypeIfNeeded(MIRType_Null, maybeInput, tag, &isNull);
-        if (handleStrings)
-            branchEqualTypeIfNeeded(MIRType_String, maybeInput, tag, &isString);
-        if (zeroObjects)
-            branchEqualTypeIfNeeded(MIRType_Object, maybeInput, tag, &isNull);
-        branchTestUndefined(Assembler::NotEqual, tag, fail);
-        break;
+          case IntConversion_Truncate:
+          case IntConversion_ClampToUint8:
+            branchEqualTypeIfNeeded(MIRType_Null, maybeInput, tag, &isNull);
+            if (handleStrings)
+                branchEqualTypeIfNeeded(MIRType_String, maybeInput, tag, &isString);
+            if (zeroObjects)
+                branchEqualTypeIfNeeded(MIRType_Object, maybeInput, tag, &isNull);
+            branchTestUndefined(Assembler::NotEqual, tag, fail);
+            break;
+        }
+    } else {
+        jump(fail);
     }
 
     // The value is null or undefined in truncation contexts - just emit 0.
@@ -1629,7 +1680,7 @@ MacroAssembler::convertValueToInt(JSContext *cx, const Value &v, Register output
             break;
           }
           case IntConversion_Truncate:
-            move32(Imm32(ToInt32(d)), output);
+            move32(Imm32(js::ToInt32(d)), output);
             break;
           case IntConversion_ClampToUint8:
             move32(Imm32(ClampDoubleToUint8(d)), output);

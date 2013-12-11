@@ -5,8 +5,6 @@
 
 # Blatantly copied from xpcom/tests/component.
 
-FORCE_SHARED_LIB = 1
-
 unittestlocation = xpcom/tests/unit
 
 MANIFEST = bug656331.manifest
@@ -25,8 +23,6 @@ EXTRA_DSO_LDOPTS += \
   $(TK_LIBS) \
   $(NULL)
 endif
-
-DEFINES += -DLIBRARY_FILENAME="$(SHARED_LIBRARY)"
 
 LIB_FILES = $(SHARED_LIBRARY)
 LIB_DEST = $(testxpcobjdir)/$(unittestlocation)

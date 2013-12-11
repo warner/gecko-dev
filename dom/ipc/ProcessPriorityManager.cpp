@@ -158,7 +158,7 @@ private:
   static bool sInitialized;
   static StaticRefPtr<ProcessPriorityManagerImpl> sSingleton;
 
-  static int PrefChangedCallback(const char* aPref, void* aClosure);
+  static void PrefChangedCallback(const char* aPref, void* aClosure);
 
   ProcessPriorityManagerImpl();
   ~ProcessPriorityManagerImpl() {}
@@ -345,12 +345,11 @@ private:
 NS_IMPL_ISUPPORTS1(ProcessPriorityManagerImpl,
                    nsIObserver);
 
-/* static */ int
+/* static */ void
 ProcessPriorityManagerImpl::PrefChangedCallback(const char* aPref,
                                                 void* aClosure)
 {
   StaticInit();
-  return 0;
 }
 
 /* static */ bool
@@ -1024,13 +1023,6 @@ ParticularProcessPriorityManager::SetPriorityNow(ProcessPriority aPriority,
     unused << mContentParent->SendMinimizeMemoryUsage();
   }
 
-  nsPrintfCString ProcessPriorityWithBackgroundLRU("%s:%d",
-    ProcessPriorityToString(mPriority, mCPUPriority),
-    aBackgroundLRU);
-
-  FireTestOnlyObserverNotification("process-priority-with-background-LRU-set",
-    ProcessPriorityWithBackgroundLRU.get());
-
   FireTestOnlyObserverNotification("process-priority-set",
     ProcessPriorityToString(mPriority, mCPUPriority));
 
@@ -1052,7 +1044,9 @@ ParticularProcessPriorityManager::ShutDown()
     mResetPriorityTimer = nullptr;
   }
 
-  ProcessPriorityManager::RemoveFromBackgroundLRUPool(mContentParent);
+  if (mPriority == PROCESS_PRIORITY_BACKGROUND && !IsPreallocated()) {
+    ProcessPriorityManager::RemoveFromBackgroundLRUPool(mContentParent);
+  }
 
   mContentParent = nullptr;
 }

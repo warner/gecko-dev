@@ -11,6 +11,7 @@
 #include "nsIIdleServiceInternal.h"
 #include "nsTArray.h"
 #include "AndroidJavaWrappers.h"
+#include "GeneratedJNIWrappers.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/TextRange.h"
@@ -152,8 +153,8 @@ public:
     NS_IMETHOD ReparentNativeWidget(nsIWidget* aNewParent);
 
     virtual bool NeedsPaint();
-    virtual void DrawWindowUnderlay(LayerManager* aManager, nsIntRect aRect);
-    virtual void DrawWindowOverlay(LayerManager* aManager, nsIntRect aRect);
+    virtual void DrawWindowUnderlay(LayerManagerComposite* aManager, nsIntRect aRect);
+    virtual void DrawWindowOverlay(LayerManagerComposite* aManager, nsIntRect aRect);
 
     virtual mozilla::layers::CompositorParent* NewCompositorParent(int aSurfaceWidth, int aSurfaceHeight) MOZ_OVERRIDE;
 

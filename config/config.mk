@@ -42,10 +42,9 @@ _MOZBUILD_EXTERNAL_VARIABLES := \
   DIRS \
   EXTRA_PP_COMPONENTS \
   EXTRA_PP_JS_MODULES \
+  FORCE_SHARED_LIB \
   FORCE_STATIC_LIB \
-  GTEST_CMMSRCS \
-  GTEST_CPPSRCS \
-  GTEST_CSRCS \
+  FINAL_LIBRARY \
   HOST_CSRCS \
   HOST_CMMSRCS \
   HOST_LIBRARY_NAME \
@@ -73,6 +72,7 @@ _MOZBUILD_EXTERNAL_VARIABLES := \
 _DEPRECATED_VARIABLES := \
   MOCHITEST_FILES_PARTS \
   MOCHITEST_BROWSER_FILES_PARTS \
+  SHORT_LIBNAME \
   $(NULL)
 
 ifndef EXTERNALLY_MANAGED_MAKE_FILE
@@ -133,7 +133,6 @@ CHECK_VARS := \
  LIBRARY_NAME \
  MODULE \
  DEPTH \
- SHORT_LIBNAME \
  XPI_PKGNAME \
  INSTALL_EXTENSION_ID \
  SHARED_LIBRARY_NAME \
@@ -332,20 +331,18 @@ _ENABLE_PIC=1
 # Determine if module being compiled is destined
 # to be merged into libxul
 
+ifeq ($(FINAL_LIBRARY),xul)
+  ifdef LIBXUL_LIBRARY
+    $(error FINAL_LIBRARY is "xul", LIBXUL_LIBRARY is implied)
+  endif
+  LIBXUL_LIBRARY := 1
+endif
+
 ifdef LIBXUL_LIBRARY
 ifdef IS_COMPONENT
 $(error IS_COMPONENT is set, but is not compatible with LIBXUL_LIBRARY)
 endif
-ifdef MODULE_NAME
-$(error MODULE_NAME is $(MODULE_NAME) but MODULE_NAME and LIBXUL_LIBRARY are not compatible)
-endif
-ifdef FORCE_STATIC_LIB
-$(error Makefile sets FORCE_STATIC_LIB which was already implied by LIBXUL_LIBRARY)
-endif
 FORCE_STATIC_LIB=1
-ifneq ($(SHORT_LIBNAME),)
-$(error SHORT_LIBNAME is $(SHORT_LIBNAME) but SHORT_LIBNAME is not compatable with LIBXUL_LIBRARY)
-endif
 endif
 
 # If we are building this component into an extension/xulapp, it cannot be
@@ -443,10 +440,6 @@ ifdef USE_EXTENSION_MANIFEST
 MAKE_JARS_FLAGS += -e
 endif
 
-ifdef BOTH_MANIFESTS
-MAKE_JARS_FLAGS += --both-manifests
-endif
-
 TAR_CREATE_FLAGS = -chf
 
 ifeq ($(OS_ARCH),OS2)
@@ -469,14 +462,14 @@ JAVA_GEN_DIR  = _javagen
 JAVA_DIST_DIR = $(DEPTH)/$(JAVA_GEN_DIR)
 JAVA_IFACES_PKG_NAME = org/mozilla/interfaces
 
-OS_INCLUDES += $(MOZ_JPEG_CFLAGS) $(MOZ_PNG_CFLAGS) $(MOZ_ZLIB_CFLAGS)
+OS_INCLUDES += $(MOZ_JPEG_CFLAGS) $(MOZ_PNG_CFLAGS) $(MOZ_ZLIB_CFLAGS) $(MOZ_PIXMAN_CFLAGS)
 
 # NSPR_CFLAGS and NSS_CFLAGS must appear ahead of OS_INCLUDES to avoid Linux
 # builds wrongly picking up system NSPR/NSS header files.
 INCLUDES = \
-  $(LOCAL_INCLUDES) \
   -I$(srcdir) \
   -I. \
+  $(LOCAL_INCLUDES) \
   -I$(DIST)/include \
   $(if $(LIBXUL_SDK),-I$(LIBXUL_SDK)/include) \
   $(NSPR_CFLAGS) $(NSS_CFLAGS) \
@@ -633,20 +626,6 @@ SDK_BIN_DIR = $(DIST)/sdk/bin
 DEPENDENCIES	= .md
 
 MOZ_COMPONENT_LIBS=$(XPCOM_LIBS) $(MOZ_COMPONENT_NSPR_LIBS)
-
-ifeq ($(OS_ARCH),OS2)
-ELF_DYNSTR_GC	= echo
-else
-ELF_DYNSTR_GC	= :
-endif
-
-ifndef CROSS_COMPILE
-ifdef USE_ELF_DYNSTR_GC
-ifdef MOZ_COMPONENTS_VERSION_SCRIPT_LDFLAGS
-ELF_DYNSTR_GC 	= $(DEPTH)/config/elf-dynstr-gc
-endif
-endif
-endif
 
 ifdef MACOSX_DEPLOYMENT_TARGET
 export MACOSX_DEPLOYMENT_TARGET
@@ -811,7 +790,7 @@ endif
 MERGE_FILES = $(foreach f,$(1),$(call MERGE_FILE,$(f)))
 
 ifeq (OS2,$(OS_ARCH))
-RUN_TEST_PROGRAM = $(topsrcdir)/build/os2/test_os2.cmd "$(LIBXUL_DIST)"
+RUN_TEST_PROGRAM = $(topsrcdir)/build/os2/test_os2.cmd '$(LIBXUL_DIST)'
 else
 ifneq (WINNT,$(OS_ARCH))
 RUN_TEST_PROGRAM = $(LIBXUL_DIST)/bin/run-mozilla.sh
@@ -848,7 +827,7 @@ EXPAND_MKSHLIB = $(EXPAND_LIBS_EXEC) $(EXPAND_MKSHLIB_ARGS) -- $(MKSHLIB)
 
 ifneq (,$(MOZ_LIBSTDCXX_TARGET_VERSION)$(MOZ_LIBSTDCXX_HOST_VERSION))
 ifneq ($(OS_ARCH),Darwin)
-CHECK_STDCXX = objdump -p $(1) | grep -e 'GLIBCXX_3\.4\.\(9\|[1-9][0-9]\)' > /dev/null && echo "TEST-UNEXPECTED-FAIL | | We don't want these libstdc++ symbols to be used:" && objdump -T $(1) | grep -e 'GLIBCXX_3\.4\.\(9\|[1-9][0-9]\)' && exit 1 || exit 0
+CHECK_STDCXX = objdump -p $(1) | grep -e 'GLIBCXX_3\.4\.\(9\|[1-9][0-9]\)' > /dev/null && echo 'TEST-UNEXPECTED-FAIL | | We do not want these libstdc++ symbols to be used:' && objdump -T $(1) | grep -e 'GLIBCXX_3\.4\.\(9\|[1-9][0-9]\)' && exit 1 || exit 0
 endif
 
 ifdef MOZ_LIBSTDCXX_TARGET_VERSION

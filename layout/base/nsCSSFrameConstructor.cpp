@@ -67,6 +67,7 @@
 #include "nsStyleStructInlines.h"
 #include "nsPageContentFrame.h"
 #include "RestyleManager.h"
+#include "StickyScrollContainer.h"
 
 #ifdef MOZ_XUL
 #include "nsIRootBox.h"
@@ -103,8 +104,6 @@ NS_NewHTMLCanvasFrame (nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
 NS_NewHTMLVideoFrame (nsIPresShell* aPresShell, nsStyleContext* aContext);
 
-#include "nsSVGTextContainerFrame.h"
-
 nsIFrame*
 NS_NewSVGOuterSVGFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
@@ -122,15 +121,9 @@ NS_NewSVGForeignObjectFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
 NS_NewSVGAFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
-NS_NewSVGGlyphFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
-nsIFrame*
 NS_NewSVGSwitchFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
-NS_NewSVGTextFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
-nsIFrame*
 NS_NewSVGTextFrame2(nsIPresShell* aPresShell, nsStyleContext* aContext);
-nsIFrame*
-NS_NewSVGTSpanFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
 NS_NewSVGContainerFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
@@ -151,8 +144,6 @@ extern nsIFrame*
 NS_NewSVGImageFrame(nsIPresShell *aPresShell, nsStyleContext* aContext);
 nsIFrame*
 NS_NewSVGClipPathFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
-nsIFrame*
-NS_NewSVGTextPathFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
 NS_NewSVGFilterFrame(nsIPresShell *aPresShell, nsStyleContext* aContext);
 nsIFrame*
@@ -1745,7 +1736,7 @@ nsCSSFrameConstructor::CreateGeneratedContentItem(nsFrameConstructorState& aStat
   nodeInfo = mDocument->NodeInfoManager()->GetNodeInfo(elemName, nullptr,
                                                        kNameSpaceID_None,
                                                        nsIDOMNode::ELEMENT_NODE);
-  nsCOMPtr<nsIContent> container;
+  nsCOMPtr<Element> container;
   nsresult rv = NS_NewXMLElement(getter_AddRefs(container), nodeInfo.forget());
   if (NS_FAILED(rv))
     return;
@@ -3107,6 +3098,10 @@ nsCSSFrameConstructor::ConstructFieldSetFrame(nsFrameConstructorState& aState,
       childItems.RemoveFrame(child);
       // Make sure to reparent the legend so it has the fieldset as the parent.
       fieldsetKids.InsertFrame(fieldsetFrame, nullptr, child);
+      if (scrollFrame) {
+        StickyScrollContainer::NotifyReparentedFrameAcrossScrollFrameBoundary(
+            child, blockFrame);
+      }
       break;
     }
   }
@@ -3153,20 +3148,11 @@ nsCSSFrameConstructor::FindTextData(nsIFrame* aParentFrame)
     nsIFrame *ancestorFrame =
       nsSVGUtils::GetFirstNonAAncestorFrame(aParentFrame);
     if (ancestorFrame) {
-      if (NS_SVGTextCSSFramesEnabled()) {
-        static const FrameConstructionData sSVGTextData =
-          FCDATA_DECL(FCDATA_IS_LINE_PARTICIPANT | FCDATA_IS_SVG_TEXT,
-                      NS_NewTextFrame);
-        if (ancestorFrame->IsSVGText()) {
-          return &sSVGTextData;
-        }
-      } else {
-        static const FrameConstructionData sSVGGlyphData =
-          SIMPLE_FCDATA(NS_NewSVGGlyphFrame);
-        nsSVGTextContainerFrame* metrics = do_QueryFrame(ancestorFrame);
-        if (metrics) {
-          return &sSVGGlyphData;
-        }
+      static const FrameConstructionData sSVGTextData =
+        FCDATA_DECL(FCDATA_IS_LINE_PARTICIPANT | FCDATA_IS_SVG_TEXT,
+                    NS_NewTextFrame);
+      if (ancestorFrame->IsSVGText()) {
+        return &sSVGTextData;
       }
     }
     return nullptr;
@@ -3412,7 +3398,7 @@ nsCSSFrameConstructor::FindInputData(Element* aElement,
       FCDATA_WITH_WRAPPING_BLOCK(0, NS_NewColorControlFrame,
                                  nsCSSAnonBoxes::buttonContent) },
     // TODO: this is temporary until a frame is written: bug 635240.
-    SIMPLE_INT_CREATE(NS_FORM_INPUT_NUMBER, NS_NewTextControlFrame),
+    SIMPLE_INT_CREATE(NS_FORM_INPUT_NUMBER, NS_NewNumberControlFrame),
     // TODO: this is temporary until a frame is written: bug 773205.
     SIMPLE_INT_CREATE(NS_FORM_INPUT_DATE, NS_NewTextControlFrame),
     // TODO: this is temporary until a frame is written: bug 773205
@@ -3554,7 +3540,7 @@ nsCSSFrameConstructor::ConstructFrameFromItemInternal(FrameConstructionItem& aIt
   nsIContent* parent = content->GetParent();
   TreeMatchContext::AutoAncestorPusher
     insertionPointPusher(aState.mTreeMatchContext);
-  if (parent && parent->IsActiveChildrenElement()) {
+  if (parent && nsContentUtils::IsContentInsertionPoint(parent)) {
     if (aState.mTreeMatchContext.mAncestorFilter.HasFilter()) {
       insertionPointPusher.PushAncestorAndStyleScope(parent);
     } else {
@@ -3766,6 +3752,10 @@ nsCSSFrameConstructor::ConstructFrameFromItemInternal(FrameConstructionItem& aIt
                ((bits & FCDATA_IS_LINE_PARTICIPANT) != 0),
                "Incorrectly set FCDATA_IS_LINE_PARTICIPANT bits");
 
+  if (aItem.mIsAnonymousContentCreatorContent) {
+    primaryFrame->AddStateBits(NS_FRAME_ANONYMOUSCONTENTCREATOR_CONTENT);
+  }
+
   // Even if mCreatingExtraFrames is set, we may need to SetPrimaryFrame for
   // generated content that doesn't have one yet.  Note that we have to examine
   // the frame bit, because by this point mIsGeneratedContent has been cleared
@@ -3822,6 +3812,7 @@ nsCSSFrameConstructor::CreateAnonymousFrames(nsFrameConstructorState& aState,
     if (newFrame) {
       NS_ASSERTION(content->GetPrimaryFrame(),
                    "Content must have a primary frame now");
+      newFrame->AddStateBits(NS_FRAME_ANONYMOUSCONTENTCREATOR_CONTENT);
       aChildItems.AddChild(newFrame);
     }
     else {
@@ -4959,44 +4950,17 @@ nsCSSFrameConstructor::FindSVGData(Element* aElement,
       return &sTSpanData;
     }
     return &sSuppressData;
-  } else if (NS_SVGTextCSSFramesEnabled()) {
-    if (aTag == nsGkAtoms::text) {
-      static const FrameConstructionData sTextData =
-        FCDATA_WITH_WRAPPING_BLOCK(FCDATA_DISALLOW_OUT_OF_FLOW |
-                                   FCDATA_ALLOW_BLOCK_STYLES,
-                                   NS_NewSVGTextFrame2,
-                                   nsCSSAnonBoxes::mozSVGText);
-      return &sTextData;
-    } else if (aTag == nsGkAtoms::tspan ||
-               aTag == nsGkAtoms::altGlyph ||
-               aTag == nsGkAtoms::textPath) {
-      return &sSuppressData;
-    }
-  } else {
-    nsIFrame *ancestorFrame =
-      nsSVGUtils::GetFirstNonAAncestorFrame(aParentFrame);
-    if (ancestorFrame) {
-      if (aTag == nsGkAtoms::tspan || aTag == nsGkAtoms::altGlyph) {
-        // tspan and altGlyph must be children of another text content element.
-        nsSVGTextContainerFrame* metrics = do_QueryFrame(ancestorFrame);
-        if (!metrics) {
-          return &sSuppressData;
-        }
-      } else if (aTag == nsGkAtoms::textPath) {
-        // textPath must be a child of text.
-        nsIAtom* ancestorFrameType = ancestorFrame->GetType();
-        if (ancestorFrameType != nsGkAtoms::svgTextFrame) {
-          return &sSuppressData;
-        }
-      } else if (aTag != nsGkAtoms::a) {
-        // Every other element except 'a' must not be a child of a text content
-        // element.
-        nsSVGTextContainerFrame* metrics = do_QueryFrame(ancestorFrame);
-        if (metrics) {
-          return &sSuppressData;
-        }
-      }
-    }
+  } else if (aTag == nsGkAtoms::text) {
+    static const FrameConstructionData sTextData =
+      FCDATA_WITH_WRAPPING_BLOCK(FCDATA_DISALLOW_OUT_OF_FLOW |
+                                 FCDATA_ALLOW_BLOCK_STYLES,
+                                 NS_NewSVGTextFrame2,
+                                 nsCSSAnonBoxes::mozSVGText);
+    return &sTextData;
+  } else if (aTag == nsGkAtoms::tspan ||
+             aTag == nsGkAtoms::altGlyph ||
+             aTag == nsGkAtoms::textPath) {
+    return &sSuppressData;
   }
 
   static const FrameConstructionDataByTag sSVGData[] = {
@@ -5017,9 +4981,6 @@ nsCSSFrameConstructor::FindSVGData(Element* aElement,
                                  NS_NewSVGForeignObjectFrame,
                                  nsCSSAnonBoxes::mozSVGForeignContent) },
     SIMPLE_SVG_CREATE(a, NS_NewSVGAFrame),
-    SIMPLE_SVG_CREATE(altGlyph, NS_NewSVGTSpanFrame),
-    SIMPLE_SVG_CREATE(text, NS_NewSVGTextFrame),
-    SIMPLE_SVG_CREATE(tspan, NS_NewSVGTSpanFrame),
     SIMPLE_SVG_CREATE(linearGradient, NS_NewSVGLinearGradientFrame),
     SIMPLE_SVG_CREATE(radialGradient, NS_NewSVGRadialGradientFrame),
     SIMPLE_SVG_CREATE(stop, NS_NewSVGStopFrame),
@@ -5027,7 +4988,6 @@ nsCSSFrameConstructor::FindSVGData(Element* aElement,
     SIMPLE_SVG_CREATE(view, NS_NewSVGViewFrame),
     SIMPLE_SVG_CREATE(image, NS_NewSVGImageFrame),
     SIMPLE_SVG_CREATE(clipPath, NS_NewSVGClipPathFrame),
-    SIMPLE_SVG_CREATE(textPath, NS_NewSVGTextPathFrame),
     SIMPLE_SVG_CREATE(filter, NS_NewSVGFilterFrame),
     SIMPLE_SVG_CREATE(pattern, NS_NewSVGPatternFrame),
     SIMPLE_SVG_CREATE(mask, NS_NewSVGMaskFrame),
@@ -5402,6 +5362,8 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
 
   item->mIsText = isText;
   item->mIsGeneratedContent = isGeneratedContent;
+  item->mIsAnonymousContentCreatorContent =
+    aFlags & ITEM_IS_ANONYMOUSCONTENTCREATOR_CONTENT;
   if (isGeneratedContent) {
     NS_ADDREF(item->mContent);
   }
@@ -6009,10 +5971,12 @@ nsCSSFrameConstructor::IsValidSibling(nsIFrame*              aSibling,
       // siblings.
       return false;
     }
-
-    return true;
+    // Fall through; it's possible that the display type was overridden and
+    // a different sort of frame was constructed, so we may need to return false
+    // below.
   }
-  else if (IsFrameForFieldSet(parentFrame, parentType)) {
+
+  if (IsFrameForFieldSet(parentFrame, parentType)) {
     // Legends can be sibling of legends but not of other content in the fieldset
     nsIAtom* sibType = aSibling->GetContentInsertionFrame()->GetType();
     bool legendContent = aContent->IsHTML(nsGkAtoms::legend);
@@ -6311,6 +6275,7 @@ nsCSSFrameConstructor::MaybeConstructLazily(Operation aOperation,
 
   if (aOperation == CONTENTINSERT) {
     if (aChild->IsRootOfAnonymousSubtree() ||
+        aChild->HasFlag(NODE_IS_IN_SHADOW_TREE) ||
         aChild->IsEditable() || aChild->IsXUL()) {
       return false;
     }
@@ -6622,6 +6587,17 @@ nsCSSFrameConstructor::ContentAppended(nsIContent*     aContainer,
 
   }
 #endif // MOZ_XUL
+
+  if (aContainer && aContainer->HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+    // Recreate frames if content is appended into a ShadowRoot
+    // because children of ShadowRoot are rendered in place of children
+    // of the host.
+    nsIContent* bindingParent = aContainer->GetBindingParent();
+    LAYOUT_PHASE_TEMP_EXIT();
+    nsresult rv = RecreateFramesForContent(bindingParent, false);
+    LAYOUT_PHASE_TEMP_REENTER();
+    return rv;
+  }
 
   // Get the frame associated with the content
   nsIFrame* parentFrame = GetFrameFor(aContainer);
@@ -7044,6 +7020,17 @@ nsCSSFrameConstructor::ContentRangeInserted(nsIContent*            aContainer,
 #endif
 
     return NS_OK;
+  }
+
+  if (aContainer->HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+    // Recreate frames if content is inserted into a ShadowRoot
+    // because children of ShadowRoot are rendered in place of
+    // the children of the host.
+    nsIContent* bindingParent = aContainer->GetBindingParent();
+    LAYOUT_PHASE_TEMP_EXIT();
+    nsresult rv = RecreateFramesForContent(bindingParent, false);
+    LAYOUT_PHASE_TEMP_REENTER();
+    return rv;
   }
 
   nsIFrame* parentFrame = GetFrameFor(aContainer);
@@ -7524,6 +7511,18 @@ nsCSSFrameConstructor::ContentRemoved(nsIContent* aContainer,
         NS_ASSERTION(!childFrame->GetNextSibling(), "How did that happen?");
       }
     }
+  }
+
+  if (aContainer && aContainer->HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+    // Recreate frames if content is removed from a ShadowRoot
+    // because it may contain an insertion point which can change
+    // how the host is rendered.
+    nsIContent* bindingParent = aContainer->GetBindingParent();
+    *aDidReconstruct = true;
+    LAYOUT_PHASE_TEMP_EXIT();
+    nsresult rv = RecreateFramesForContent(bindingParent, false);
+    LAYOUT_PHASE_TEMP_REENTER();
+    return rv;
   }
 
   if (childFrame) {
@@ -8161,6 +8160,9 @@ nsCSSFrameConstructor::CreateContinuingFrame(nsPresContext* aPresContext,
   } else if (nsGkAtoms::legendFrame == frameType) {
     newFrame = NS_NewLegendFrame(shell, styleContext);
     newFrame->Init(content, aParentFrame, aFrame);
+  } else if (nsGkAtoms::flexContainerFrame == frameType) {
+    newFrame = NS_NewFlexContainerFrame(shell, styleContext);
+    newFrame->Init(content, aParentFrame, aFrame);
   } else {
     NS_RUNTIMEABORT("unexpected frame type");
   }
@@ -8175,6 +8177,12 @@ nsCSSFrameConstructor::CreateContinuingFrame(nsPresContext* aPresContext,
   // A continuation of generated content is also generated content
   if (aFrame->GetStateBits() & NS_FRAME_GENERATED_CONTENT) {
     newFrame->AddStateBits(NS_FRAME_GENERATED_CONTENT);
+  }
+
+  // A continuation of nsIAnonymousContentCreator content is also
+  // nsIAnonymousContentCreator created content
+  if (aFrame->GetStateBits() & NS_FRAME_ANONYMOUSCONTENTCREATOR_CONTENT) {
+    newFrame->AddStateBits(NS_FRAME_ANONYMOUSCONTENTCREATOR_CONTENT);
   }
 
   // A continuation of an out-of-flow is also an out-of-flow
@@ -8636,6 +8644,27 @@ nsCSSFrameConstructor::RecreateFramesForContent(nsIContent* aContent,
       return RecreateFramesForContent(nonGeneratedAncestor->GetContent(), aAsyncInsert);
     }
 
+    if (frame->GetStateBits() & NS_FRAME_ANONYMOUSCONTENTCREATOR_CONTENT) {
+      // Recreate the frames for the entire nsIAnonymousContentCreator tree
+      // since |frame| or one of its descendants may need an nsStyleContext
+      // that associates it to a CSS pseudo-element, and only the
+      // nsIAnonymousContentCreator that created this content knows how to make
+      // that happen.
+      nsIAnonymousContentCreator* acc = nullptr;
+      nsIFrame* ancestor = frame->GetParent();
+      while (!(acc = do_QueryFrame(ancestor))) {
+        ancestor = ancestor->GetParent();
+      }
+      NS_ASSERTION(acc, "Where is the nsIAnonymousContentCreator? We may fail "
+                        "to recreate its content correctly");
+      // nsSVGUseFrame is special, and we know this is unnecessary for it.
+      if (ancestor->GetType() != nsGkAtoms::svgUseFrame) {
+        NS_ASSERTION(aContent->IsInNativeAnonymousSubtree(),
+                     "Why is NS_FRAME_ANONYMOUSCONTENTCREATOR_CONTENT set?");
+        return RecreateFramesForContent(ancestor->GetContent(), aAsyncInsert);
+      }
+    }
+
     nsIFrame* parent = frame->GetParent();
     nsIContent* parentContent = parent ? parent->GetContent() : nullptr;
     // If the parent frame is a leaf then the subsequent insert will fail to
@@ -8700,7 +8729,8 @@ nsCSSFrameConstructor::GetFirstLetterStyle(nsIContent* aContent,
     return mPresShell->StyleSet()->
       ResolvePseudoElementStyle(aContent->AsElement(),
                                 nsCSSPseudoElements::ePseudo_firstLetter,
-                                aStyleContext);
+                                aStyleContext,
+                                nullptr);
   }
   return nullptr;
 }
@@ -8713,7 +8743,8 @@ nsCSSFrameConstructor::GetFirstLineStyle(nsIContent* aContent,
     return mPresShell->StyleSet()->
       ResolvePseudoElementStyle(aContent->AsElement(),
                                 nsCSSPseudoElements::ePseudo_firstLine,
-                                aStyleContext);
+                                aStyleContext,
+                                nullptr);
   }
   return nullptr;
 }
@@ -9210,7 +9241,8 @@ nsCSSFrameConstructor::AddFCItemsForAnonymousContent(
       anonChildren = &aAnonymousItems[i].mChildren;
     }
 
-    uint32_t flags = ITEM_ALLOW_XBL_BASE | ITEM_ALLOW_PAGE_BREAK | aExtraFlags;
+    uint32_t flags = ITEM_ALLOW_XBL_BASE | ITEM_ALLOW_PAGE_BREAK |
+                     ITEM_IS_ANONYMOUSCONTENTCREATOR_CONTENT | aExtraFlags;
 
     AddFrameConstructionItemsInternal(aState, content, aFrame,
                                       content->Tag(), content->GetNameSpaceID(),
@@ -9320,9 +9352,8 @@ nsCSSFrameConstructor::ProcessChildren(nsFrameConstructorState& aState,
       // it does not have a frame and would not otherwise be pushed as an ancestor.
       nsIContent* parent = child->GetParent();
       MOZ_ASSERT(parent, "Parent must be non-null because we are iterating children.");
-      MOZ_ASSERT(parent->IsElement());
       TreeMatchContext::AutoAncestorPusher ancestorPusher(aState.mTreeMatchContext);
-      if (parent != aContent) {
+      if (parent != aContent && parent->IsElement()) {
         if (aState.mTreeMatchContext.mAncestorFilter.HasFilter()) {
           ancestorPusher.PushAncestorAndStyleScope(parent->AsElement());
         } else {
@@ -10617,9 +10648,8 @@ nsCSSFrameConstructor::BuildInlineChildItems(nsFrameConstructorState& aState,
       // it does not have a frame and would not otherwise be pushed as an ancestor.
       nsIContent* contentParent = content->GetParent();
       MOZ_ASSERT(contentParent, "Parent must be non-null because we are iterating children.");
-      MOZ_ASSERT(contentParent->IsElement());
       TreeMatchContext::AutoAncestorPusher insertionPointPusher(aState.mTreeMatchContext);
-      if (contentParent != parentContent) {
+      if (contentParent != parentContent && contentParent->IsElement()) {
         if (aState.mTreeMatchContext.mAncestorFilter.HasFilter()) {
           insertionPointPusher.PushAncestorAndStyleScope(contentParent->AsElement());
         } else {
