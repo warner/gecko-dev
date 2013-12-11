@@ -541,7 +541,7 @@ this.FxAccounts.prototype = Object.freeze({
           // If the email is not verified, start polling for verification,
           // but return null right away.  We don't want to return a promise
           // that might not be fulfilled for a long time.
-          internal.startVerifiedCheck(credentials);
+          internal.startVerifiedCheck(data);
         }
         return data;
       });
