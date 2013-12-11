@@ -7,8 +7,7 @@ Cu.import("resource://services-sync/browserid_identity.js");
 Cu.import("resource://services-sync/rest.js");
 Cu.import("resource://services-sync/util.js");
 
-let mockUser = {assertion: 'assertion',
-                email: 'email',
+let mockUser = {email: 'email',
                 kA: 'kA',
                 kB: 'kB',
                 sessionToken: 'sessionToken',
@@ -19,11 +18,14 @@ let _MockFXA = function(blob) {
   this.user = blob;
 };
 _MockFXA.prototype = {
-  __proto__: FxAccounts.prototype,
-  _getUserAccountData: function _getUserAccountData() {
-    let deferred = Promise.defer();
-    deferred.resolve(this.user);
-    return deferred.promise;
+  getSignedInUser: function getSignedInUser() {
+    return Promise.resolve(this.user);
+  },
+  whenVerified: function whenVerified(userData) {
+    return Promise.resolve(this.user);
+  },
+  getAssertion: function getAssertion(audience) {
+    return Promise.resolve("assertion");
   },
 };
 let mockFXA = new _MockFXA(mockUser);
