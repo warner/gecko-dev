@@ -78,9 +78,15 @@ WeaveService.prototype = {
         if (accountData) {
           Cu.import("resource://services-sync/browserid_identity.js");
           Cu.import("resource://services-common/tokenserverclient.js");
-          Weave.Status._authManager = new BrowserIDManager(fxAccounts, new TokenServerClient()),
-          // init the identity module with any account data from
-          // firefox accounts
+          // The Sync Identity module needs to be set in both these places if
+          // it's swapped out as we are doing here. When Weave.Service initializes
+          // it grabs a reference to Weave.Status._authManager, and for references
+          // to Weave.Service.identity to resolve correctly, we also need to reset
+          // Weave.Service.identity as well.
+          Weave.Service.identity = Weave.Status._authManager = new BrowserIDManager(fxAccounts, new TokenServerClient()),
+          // Init the identity module with any account data from
+          // firefox accounts. The Identity module will fetch the signed in
+          // user from fxAccounts directly.
           Weave.Service.identity.initWithLoggedInUser().then(function () {
             // Set the cluster data that we got from the token
             Weave.Service.clusterURL = Weave.Service.identity.clusterURL;
@@ -139,6 +145,8 @@ WeaveService.prototype = {
         // Tell sync that if this is a first sync, it should try and sync the
         // server data with what is on the client - despite the name implying
         // otherwise, this is what "resetClient" does.
+        // TOOD: This implicitly assumes we're in the CLIENT_NOT_CONFIGURED state, and
+        // if we're not, we should handle it here.
         Components.utils.import("resource://services-sync/main.js"); // ensure 'Weave' exists
         Weave.Svc.Prefs.set("firstSync", "resetClient");
         this.maybeInitWithFxAccountsAndEnsureLoaded().then(() => {
