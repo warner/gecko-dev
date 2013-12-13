@@ -312,6 +312,7 @@ Sync11Service.prototype = {
     }
 
     this.status = Status;
+    this.identity = Status._authManager;
     this.collectionKeys = new CollectionKeyManager();
 
     this.errorHandler = new ErrorHandler(this);
@@ -370,10 +371,6 @@ Sync11Service.prototype = {
 
       Svc.Obs.notify("weave:service:ready");
     }.bind(this));
-  },
-
-  get identity() {
-    return this.status._authManager;
   },
 
   _checkSetup: function _checkSetup() {
