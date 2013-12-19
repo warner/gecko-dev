@@ -322,6 +322,7 @@ InternalMethods.prototype = {
   },
 
   startVerifiedCheck: function(data) {
+    dump("startVerifiedCheck\n");
     log.debug("startVerifiedCheck " + JSON.stringify(data));
     // Get us to the verified state, then get the keys. This returns a promise
     // that will fire when we are completely ready.
@@ -334,15 +335,19 @@ InternalMethods.prototype = {
   },
 
   whenVerified: function(data) {
+    dump("whenVerified\n");
     if (data.isVerified) {
+      dump("already verified\n");
       log.debug("already verified");
       return Promise.resolve(data);
     }
     if (!this.whenVerifiedPromise) {
       this.whenVerifiedPromise = Promise.defer();
+      dump("whenVerified promise starts polling for verified email\n");
       log.debug("whenVerified promise starts polling for verified email");
       this.pollEmailStatus(data.sessionToken, "start");
     }
+    dump("whenVerified returns promise\n");
     return this.whenVerifiedPromise.promise;
   },
 
@@ -362,9 +367,11 @@ InternalMethods.prototype = {
 
   pollEmailStatus: function pollEmailStatus(sessionToken, why) {
     let myGenerationCount = this.generationCount;
+    dump("entering pollEmailStatus: " + why + " " + myGenerationCount+"\n");
     log.debug("entering pollEmailStatus: " + why + " " + myGenerationCount);
     if (why == "start") {
       if (this.currentTimer) {
+        dump("already polling\n");
         // safety check - this case should have been caught on
         // entry with setSignedInUser
         throw new Error("Already polling for email status");
@@ -374,6 +381,7 @@ InternalMethods.prototype = {
 
     this.checkEmailStatus(sessionToken)
       .then((response) => {
+        dump("checkEmailStatus -> " + JSON.stringify(response)+"\n");
         log.debug("checkEmailStatus -> " + JSON.stringify(response));
         // Check to see if we're still current.
         // If for some ghastly reason we are not, stop processing.
@@ -386,14 +394,17 @@ InternalMethods.prototype = {
         if (response && response.verified) {
           // Bug 947056 - Server should be able to tell FxAccounts.jsm to back
           // off or stop polling altogether
+          dump("was verified\n");
           this.getUserAccountData()
             .then((data) => {
               data.isVerified = true;
+              dump("setting verified = true\n");
               return this.setUserAccountData(data);
             })
             .then((data) => {
               // Now that the user is verified, we can proceed to fetch keys
               if (this.whenVerifiedPromise) {
+                dump("firing whenVerifiedPromise\n");
                 this.whenVerifiedPromise.resolve(data);
                 delete this.whenVerifiedPromise;
               }
@@ -403,11 +414,15 @@ InternalMethods.prototype = {
           this.pollTimeRemaining -= this.POLL_STEP;
           log.debug("time remaining: " + this.pollTimeRemaining);
           if (this.pollTimeRemaining > 0) {
+            dump("starting timer\n");
             this.currentTimer = setTimeout(() => {
+              dump(" timer fired\n");
               this.pollEmailStatus(sessionToken, "timer")}, this.POLL_STEP);
             log.debug("started timer " + this.currentTimer);
           } else {
+            dump("timeout, giving up\n");
             if (this.whenVerifiedPromise) {
+              dump(" rejecting pending promise\n");
               this.whenVerifiedPromise.reject(
                 new Error("User email verification timed out.")
               );
@@ -484,6 +499,7 @@ this.FxAccounts.prototype = Object.freeze({
    *         successfully and is rejected on error.
    */
   setSignedInUser: function setSignedInUser(credentials) {
+    dump("setSignedInUser: "+JSON.stringify(credentials)+"\n");
     log.debug("setSignedInUser - aborting any existing flows");
     internal.abortExistingFlow();
 

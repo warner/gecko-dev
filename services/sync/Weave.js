@@ -66,6 +66,7 @@ WeaveService.prototype = {
   },
 
   maybeInitWithFxAccountsAndEnsureLoaded: function() {
+    dump("maybeInitWithFxAccountsAndEnsureLoaded\n");
     Components.utils.import("resource://services-sync/main.js");
     // FxAccounts imports lots of stuff, so only do this as we need it
     Cu.import("resource://gre/modules/FxAccounts.jsm");
@@ -75,6 +76,7 @@ WeaveService.prototype = {
     //  - User is signed in to FxAccounts, btu hasn't set up sync.
     return fxAccounts.getSignedInUser().then(
       (accountData) => {
+        dump("getSignedInUser gave data: " + JSON.stringify(accountData) + "\n");
         if (accountData) {
           Cu.import("resource://services-sync/browserid_identity.js");
           Cu.import("resource://services-common/tokenserverclient.js");
@@ -125,11 +127,13 @@ WeaveService.prototype = {
       this.timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
       this.timer.initWithCallback({
         notify: function() {
+          dump("final-ui-startup timer\n");
           // We only load more if it looks like Sync is configured.
           let prefs = Services.prefs.getBranch(SYNC_PREFS_BRANCH);
           if (!prefs.prefHasUserValue("username")) {
             return;
           }
+          dump(" had username\n");
 
           // We have a username. So, do a more thorough check. This will
           // import a number of modules and thus increase memory
@@ -147,6 +151,7 @@ WeaveService.prototype = {
         // otherwise, this is what "resetClient" does.
         // TOOD: This implicitly assumes we're in the CLIENT_NOT_CONFIGURED state, and
         // if we're not, we should handle it here.
+        dump("fxaccounts:onlogin\n");
         Components.utils.import("resource://services-sync/main.js"); // ensure 'Weave' exists
         Weave.Svc.Prefs.set("firstSync", "resetClient");
         this.maybeInitWithFxAccountsAndEnsureLoaded().then(() => {
